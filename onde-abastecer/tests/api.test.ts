@@ -31,3 +31,23 @@ test('equal prices receive a neutral relative band', () => {
   const stations = [1, 2].map(id => ({ id: String(id), prices: [{ fuel: 'diesel', price: 1.8, currency: 'EUR' }] }));
   assert.deepEqual(addRelativePriceBands(stations as never, 'diesel').map(s => s.priceBand), [3, 3]);
 });
+
+test('rate limit blocks source work without returning raw IP or upstream details', async () => {
+  const response = await worker.fetch(new Request('https://test/v1/stations?country=ES&lat=42&lng=-8', { headers: { 'cf-connecting-ip': '192.0.2.1' } }), { STATION_RATE_LIMITER: { async limit() { return { success: false }; } } });
+  assert.equal(response.status, 429);
+  assert.deepEqual(await response.json(), { error: 'rate_limited' });
+  assert.equal(response.headers.get('retry-after'), '60');
+});
+test('country registry distinguishes tested sources from an unverified Italian connector', async () => {
+  const response = await worker.fetch(new Request('https://test/v1/countries'));
+  const payload = await response.json();
+  assert.equal(payload.countries.find(c => c.code === 'IT').status, 'unverified');
+  assert.equal(payload.countries.find(c => c.code === 'PT').licence.includes('DGEG'), true);
+});
+test('source failure is reported as failure and does not leak error messages', async t => {
+  const { adapters } = await import('../api/src/countries/registry');
+  t.mock.method(adapters.ES, 'listStations', async () => { throw Error('private upstream request information'); });
+  const response = await worker.fetch(new Request('https://test/v1/stations?country=ES&lat=42&lng=-8'));
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), { error: 'source_unavailable', country: 'ES' });
+});

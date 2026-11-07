@@ -12,8 +12,9 @@ function numberParam(url: URL, key: string, fallback?: number) {
   const value = Number(raw);
   return Number.isFinite(value) ? value : undefined;
 }
+interface Env { STATION_RATE_LIMITER?: { limit(options: { key: string }): Promise<{ success: boolean }> } }
 export default {
-  async fetch(request: Request): Promise<Response> {
+  async fetch(request: Request, env: Env = {}): Promise<Response> {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET,OPTIONS', 'access-control-allow-headers': 'content-type' } });
     if (request.method !== 'GET') return json({ error: 'method_not_allowed' }, 405);
     const url = new URL(request.url);
@@ -28,6 +29,17 @@ export default {
     if (latitude == null || longitude == null || !validCoordinates(latitude, longitude)) return json({ error: 'invalid_coordinates' }, 400);
     if (radiusKm == null || radiusKm < 1 || radiusKm > 100) return json({ error: 'invalid_radius' }, 400);
     if (!FUELS.includes(fuel)) return json({ error: 'invalid_fuel' }, 400);
+    if (env.STATION_RATE_LIMITER) {
+      const ip = request.headers.get('cf-connecting-ip') ?? 'local';
+      const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip));
+      const key = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
+      const result = await env.STATION_RATE_LIMITER.limit({ key });
+      if (!result.success) {
+        const response = json({ error: 'rate_limited' }, 429);
+        response.headers.set('retry-after', '60');
+        return response;
+      }
+    }
     const adapter = adapters[country];
     if (adapter.status !== 'live') return json({ error: 'country_not_live_yet', country, status: adapter.status }, 501);
     try {

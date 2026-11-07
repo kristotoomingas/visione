@@ -47,3 +47,15 @@ test('IT keeps service mode and does not infer 98 octane from special marketing 
   assert.equal(stations[0].prices.some(p => p.fuel === 'gasoline98'), false);
   assert.equal(stations[0].prices[0].serviceMode, 'self');
 });
+
+test('FR excludes a permanently closed station and a fuel with an active outage', async () => {
+  const { parseFrance } = await import('../api/src/countries/fr');
+  const xml = '<pdv_liste><pdv id="closed" latitude="4885660" longitude="235220"><fermeture type="D" debut="2026-10-01"/><prix nom="Gazole" id="1" valeur="1.5" maj="2026-11-07 09:00:00"/></pdv><pdv id="outage" latitude="4885660" longitude="235220"><rupture id="1" debut="2026-11-06 10:00:00"/><prix nom="Gazole" id="1" valeur="1.6" maj="2026-11-07 09:00:00"/></pdv></pdv_liste>';
+  const stations = parseFrance(zipSync({ 'f.xml': new TextEncoder().encode(xml) }));
+  assert.deepEqual(stations, []);
+});
+test('ES does not advertise restricted sale stations as public refuelling options', async () => {
+  const { parseSpain } = await import('../api/src/countries/es');
+  const fixture = JSON.parse(es); fixture.ListaEESSPrecio[0]['Tipo Venta'] = 'R';
+  assert.equal(parseSpain(fixture).some(s => s.id === 'fixture-west'), false);
+});

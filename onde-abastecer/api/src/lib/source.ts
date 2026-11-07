@@ -2,7 +2,7 @@
 export async function fetchSource(url: string, init: RequestInit = {}): Promise<Response> {
   for (let attempt = 0; attempt < 2; attempt++) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 25000);
+    const timer = setTimeout(() => controller.abort(), 45000);
     try {
       const response = await fetch(url, { ...init, signal: controller.signal, cf: { cacheTtl: 300, cacheEverything: true } });
       if (!response.ok) {

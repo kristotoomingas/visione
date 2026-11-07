@@ -31,7 +31,7 @@ function parseTimestamp(raw: unknown, timeZone: string): string | undefined {
   const iso = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/);
   const parts = es ? [es[3], es[2], es[1], es[4], es[5], es[6] ?? '00'] : iso?.slice(1).map(v => v ?? '00');
   if (!parts) return undefined;
-  const [year, month, day, hour, minute, second] = parts.map(Number);
+  const [year, month, day, hour, minute, second] = parts.map(Number) as [number, number, number, number, number, number];
   const naive = Date.UTC(year, month - 1, day, hour, minute, second);
   const date = new Date(naive);
   if (year < 2000 || date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day || hour > 23 || minute > 59 || second > 59) return undefined;
@@ -44,7 +44,7 @@ function parseTimestamp(raw: unknown, timeZone: string): string | undefined {
     const ms = naive - offset * 60000;
     if (formatter.format(ms) === target) matches.push(ms);
   }
-  return matches.length === 1 ? new Date(matches[0]).toISOString() : undefined;
+  return matches.length === 1 ? new Date(matches[0]!).toISOString() : undefined;
 }
 export function priceFreshness(price: FuelPrice, now = Date.now()): 'fresh' | 'stale' | 'unknown' {
   const ms = price.updatedAt ? Date.parse(price.updatedAt) : NaN;

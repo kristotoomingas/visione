@@ -20,6 +20,8 @@ export function parseFrance(bytes: Uint8Array): Station[] {
   const parsed = parser.parse(xml);
   if (!parsed.pdv_liste) throw new Error('invalid_source_schema');
   return deduplicate(array(parsed.pdv_liste.pdv as Row | Row[]).flatMap((raw): Station[] => {
+    const closure = raw.fermeture as Row | undefined;
+    if (closure?.type === 'D') return [];
     const lat = decimal(raw.latitude), lng = decimal(raw.longitude);
     if (lat == null || lng == null) return [];
     const latitude = lat / 100000, longitude = lng / 100000;

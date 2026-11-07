@@ -9,6 +9,7 @@ export function parseSpain(payload: { Fecha?: string; ListaEESSPrecio?: Array<Re
   if (!Array.isArray(payload.ListaEESSPrecio)) throw new Error('invalid_source_schema');
   const sourceUpdatedAt = sourceTimestamp(payload.Fecha, 'Europe/Madrid');
   return deduplicate(payload.ListaEESSPrecio.flatMap((raw): Station[] => {
+    if (raw['Tipo Venta'] === 'R') return [];
     const latitude = decimal(raw.Latitud);
     const longitude = decimal(raw['Longitud (WGS84)']);
     if (latitude == null || longitude == null || !validCoordinates(latitude, longitude)) return [];
