@@ -1,75 +1,62 @@
 name: Onde Abastecer API
-
 on:
   push:
-    branches:
-      - feature/onde-abastecer-mvp
-      - main
-    paths:
-      - "onde-abastecer/api/**"
-      - ".github/workflows/onde-abastecer-api.yml"
+    branches: [main, 'codex/onde-abastecer-*', feature/onde-abastecer-mvp]
+    paths: ['onde-abastecer/api/**', 'onde-abastecer/shared/**', 'onde-abastecer/tests/**', 'onde-abastecer/package*.json', 'onde-abastecer/eslint.config.mjs', '.github/workflows/onde-abastecer-api.yml']
   pull_request:
-    paths:
-      - "onde-abastecer/api/**"
-      - ".github/workflows/onde-abastecer-api.yml"
+    paths: ['onde-abastecer/**', '.github/workflows/onde-abastecer-api.yml']
   workflow_dispatch:
-
+    inputs:
+      deploy:
+        description: 'Explicitly authorize production Worker deployment from main'
+        type: boolean
+        required: true
+        default: false
 permissions:
   contents: read
-
 concurrency:
   group: onde-abastecer-api-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   validate:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: onde-abastecer/api
-
+        working-directory: onde-abastecer
+    env:
+      WRANGLER_SEND_METRICS: 'false'
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Use Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
         with:
-          node-version: "22"
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
           cache: npm
-          cache-dependency-path: onde-abastecer/api/package.json
-
-      - name: Install dependencies
-        run: npm install
-
-      - name: Typecheck
-        run: npm run typecheck
-
+          cache-dependency-path: |
+            onde-abastecer/package-lock.json
+            onde-abastecer/api/package-lock.json
+      - run: npm ci
+      - run: npm ci --prefix api
+      - run: npm run lint
+      - run: npm run typecheck --prefix api
+      - run: npm test
+      - run: npm audit --prefix api --omit=dev --audit-level=high
+      - run: npm run build --prefix api
   deploy:
-    if: github.event_name == 'push'
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'
     needs: validate
     runs-on: ubuntu-latest
-
+    environment: onde-abastecer-production
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Check Cloudflare deploy credentials
-        id: credentials
-        env:
-          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        shell: bash
-        run: |
-          if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Cloudflare deploy skipped. Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets."
-          fi
-
-      - name: Deploy Cloudflare Worker
-        if: steps.credentials.outputs.enabled == 'true'
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --prefix onde-abastecer/api
+      - name: Deploy explicitly authorized Worker
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
