@@ -36,3 +36,17 @@ Acquire users with trustworthy data and retention first. Later: disclosed affili
 ## Release gate
 
 Passing automated checks is necessary, not proof of native usability. A release needs Android/iOS device smoke tests, verified production API availability, licence evidence, resource-budget measurements and explicit publication authorization. Source outages and unavailable device tooling remain recorded blockers, not successful tests.
+
+## Delivery status — this branch
+
+| Priority | Result |
+|---|---|
+| P0 audit / preservation | Complete: MVP history retained, unrelated VISIONE files unchanged; AGENTS, audit and locks added. |
+| P0 data trust | Complete for enabled ES/FR/PT adapters: signed coordinates, schema/source errors, distinct E10, timestamps, valid metadata, source failures, exact-query offline signalling. Italy remains disabled. |
+| P0 economy and checks | 42 fixture/domain/client tests and 9 browser scenarios passed locally; lint/types, Worker dry bundle and all Expo exports passed; Expo Doctor 21/21. CI status is tracked on the draft PR. |
+| P1 mobile | Implemented map/list, clusters, coordinate search, native address search, explicit GPS, applicable filters, price/proximity sorting, details/navigation/share, savings form, local preferences/favourites/cache, PT/EN and accessible controls. |
+| P1 deployment readiness | **Blocked:** no actual Android/iOS device QA; no deployed free Worker CPU/memory measurements. Local workerd DNS fails here; same-handler Node development fallback is verified. |
+| P1 remaining | Browser city/address geocoder, per-station road routing and savings sorting, durable scheduled country snapshots, complete global language coverage. No road-data basis is invented to fill these gaps. |
+| P2 | Other countries/categories, FX feed, permitted history/alerts, advanced border routing and monetization are planned/documented, not implemented coverage. |
+
+The release gate remains open. No production deployment, merge or store publication has occurred.

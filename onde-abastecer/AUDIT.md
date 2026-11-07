@@ -41,3 +41,26 @@ At approximately 10:39–10:41 UTC:
 - Additional categories remain unavailable until permitted datasets exist. No paid service or required OpenAI API.
 
 Further test results, review and remaining blockers are appended as work progresses.
+
+## Final local verification and review
+
+- Lint and both API/mobile typechecks: PASS.
+- `npm test`: **42/42 PASS**, no skipped tests. Coverage includes official-format synthetic fixtures (ES/FR/IT/PT), active outages/closed stations/restricted sales, explicit source errors, signed/ranged coordinates, metadata/date validation, neutral ties, currency/unit/vehicle/route savings, bounded retries/cache coalescing, configuration failure, offline matching, request cancellation and deletion/write ordering.
+- Chromium browser tests: **9/9 PASS**. Map/list/details, favourite persistence, filters, exact coordinate query, delayed fuel response, unsupported country, offline reload, successful browser GPS, map-area search superseding GPS, deletion during search and PT/EN product labels.
+- Worker dry bundle and Expo web/Android/iOS JS/Hermes exports: PASS. These are not signed native app packages or production resource-budget tests.
+- Expo Doctor 1.21.6: **21/21 PASS** with Node proxy support; earlier remote-check failures are retained above.
+- Production and development dependency audits are recorded separately. API/mobile full audits: 0 known vulnerabilities after patched Expo fingerprint glob/minimatch overrides. Lint tooling initially reported 7 moderate transitive minimatch advisories; a scoped patched override was applied and rechecked. No high/critical advisory was ignored.
+- Targeted secret-pattern scan of changed files: no matching private keys/GitHub/OpenAI/AWS tokens. `git diff --check`: PASS. This is a scoped scan, not proof that all historical VISIONE commits are secret-free.
+- Source smoke after parser corrections, 2026-11-07: ES at 11:20:08Z = 150 stations/30 km Vigo, 31.045s; FR at 11:20:13Z = 395 diesel stations/20 km Paris, 4.177s; PT at 11:20:15Z = 387 stations/30 km Lisbon, 2.528s. All returned positive litre prices. These are observed query results, not national coverage totals or guaranteed future availability.
+- Live browser opened the real Spanish query (150 stations), map/list/detail and a 390px viewport without page errors using the Node fallback. Real Node handler HTTP requests for FR/PT also returned 200 (395/387); no fixture mode exists in app code.
+- Local workerd run: all real source queries failed 502; diagnostic runtime log reports DNS lookup failure in the network-proxy environment. This is an explicit failed integration check. Node reading the same sources through the proxy succeeds. No Worker deployment was attempted.
+
+### Independent review and fix pass
+
+Read-only reviewer inspected head `8155a6f` and ran all then-existing 34 tests. It found five Important issues: source-level ES errors becoming empty successes; inferred automatic service from 24h opening; pending location overwriting map-area search; browser reverse geocoding rejecting valid GPS; deletion/cache write races. Each was reproduced with a failing test and fixed; the suite grew to 42 tests plus 9 browser scenarios. Impossible ISO calendar dates and unsafe optional rendering metadata were raised from Minor to Important because they affect price trust/app stability and also fixed with regressions. No second independent review is claimed; the fix pass was validated by the complete automated suites.
+
+Decisions: retain selected country when reverse geocoding supplies no country, with notice; preserve unknown service mode instead of inferring automation; serialize/fence local writes and deletion; reject mixed-currency savings until an actual FX source exists; retain original source times and mark ES feed-publication semantics. Cost if these assumptions need changing: local UI/adapters can change without changing unrelated VISIONE products or introducing paid infrastructure.
+
+### Remaining genuine blockers and next cycle
+
+Actual Android/iOS map/device QA and the real free Worker execution budget remain unverified. ES/FR national parsing must be profiled and may require scheduled spatial snapshots before launch. Italy needs restored source access and current licence evidence. Address lookup on web, routed per-station savings sorting, FX, durable history/alerts and additional categories/countries remain open roadmap items. No requirement is represented as complete merely because its interface exists.

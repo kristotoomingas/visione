@@ -31,7 +31,7 @@ async function load(fuel: FuelType): Promise<Station[]> {
 }
 export const portugalAdapter: CountryAdapter = {
   code: 'PT', status: 'live', sourceName: SOURCE, sourceUrl: 'https://precoscombustiveis.dgeg.gov.pt/',
-  licence: 'DGEG reuse notice: attribution, last update and faithful reproduction', termsUrl: 'https://precoscombustiveis.dgeg.gov.pt/', lastVerifiedAt: '2026-11-07T10:41:00Z',
+  licence: 'DGEG reuse notice: attribution, last update and faithful reproduction', termsUrl: 'https://precoscombustiveis.dgeg.gov.pt/', lastVerifiedAt: '2026-11-07T11:20:15Z',
   async listStations(query) {
     if (!snapshots.has(query.fuel)) snapshots.set(query.fuel, snapshotCache(() => load(query.fuel), 900000));
     return (await snapshots.get(query.fuel)!()).filter(s => distanceKm(query, s) <= query.radiusKm);

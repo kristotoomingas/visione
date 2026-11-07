@@ -43,6 +43,6 @@ export function parseFrance(bytes: Uint8Array): Station[] {
 const snapshot = snapshotCache(async () => parseFrance(new Uint8Array(await (await fetchSource(FR_ENDPOINT)).arrayBuffer())));
 export const franceAdapter: CountryAdapter = {
   code: 'FR', status: 'live', sourceName: SOURCE, sourceUrl: FR_ENDPOINT,
-  licence: 'Licence Ouverte / Open Licence 2.0', termsUrl: 'https://www.prix-carburants.gouv.fr/rubrique/opendata/', lastVerifiedAt: '2026-11-07T10:39:28Z',
+  licence: 'Licence Ouverte / Open Licence 2.0', termsUrl: 'https://www.prix-carburants.gouv.fr/rubrique/opendata/', lastVerifiedAt: '2026-11-07T11:20:13Z',
   async listStations(query) { return (await snapshot()).filter(s => distanceKm(query, s) <= query.radiusKm && s.prices.some(p => p.fuel === query.fuel)); }
 };

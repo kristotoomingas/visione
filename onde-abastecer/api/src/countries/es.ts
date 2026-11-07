@@ -29,6 +29,6 @@ export function parseSpain(payload: { Fecha?: string; ResultadoConsulta?: unknow
 const snapshot = snapshotCache(async () => parseSpain(await (await fetchSource(ES_ENDPOINT, { headers: { accept: 'application/json' } })).json()));
 export const spainAdapter: CountryAdapter = {
   code: 'ES', status: 'live', sourceName: SOURCE, sourceUrl: ES_ENDPOINT,
-  termsUrl: 'https://www.miteco.gob.es/es/atencion-al-ciudadano/aviso-legal.html', licence: 'Official reuse notice; attribution, metadata and no endorsement', lastVerifiedAt: '2026-11-07T10:39:46Z',
+  termsUrl: 'https://www.miteco.gob.es/es/atencion-al-ciudadano/aviso-legal.html', licence: 'Official reuse notice; attribution, metadata and no endorsement', lastVerifiedAt: '2026-11-07T11:20:08Z',
   async listStations(query) { return (await snapshot()).filter(s => distanceKm(query, s) <= query.radiusKm && s.prices.some(p => p.fuel === query.fuel)); }
 };

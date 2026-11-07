@@ -73,8 +73,9 @@ npm test
 npm run build
 npx playwright install chromium
 npm run test:e2e
-npm audit --prefix api --omit=dev
-npm audit --prefix mobile --omit=dev
+npm audit
+npm audit --prefix api
+npm audit --prefix mobile
 ```
 
 Run Expo Doctor from its project directory for unambiguous project detection:
@@ -119,7 +120,7 @@ The two scoped GitHub Actions workflows install locked dependencies, run lint/ty
 
 No production publication is authorized by this branch. Before release:
 
-1. Profile upstream parsing against the actual free Worker CPU/memory and traffic limits; ES cold download was ~29s here. See [ARCHITECTURE.md](docs/ARCHITECTURE.md). Do not enable paid overages.
+1. Profile upstream parsing against the actual free Worker CPU/memory and traffic limits; ES cold download was ~31s here. See [ARCHITECTURE.md](docs/ARCHITECTURE.md). Do not enable paid overages.
 2. Recheck licences, quotas, map provider/OSM tile rules and source reachability from deployment region.
 3. Validate on real Android and iOS devices: map rendering, safe areas, permission denial/allow, address search, navigation, share, offline, accessibility and slow network. No Android SDK/emulator or macOS/Xcode was available here.
 4. Review standalone native map configuration. Android Google Maps setup can require a provider key/account and platform terms; none was obtained. If free deployment constraints cannot be met, select a permitted alternative before release. Expo Go bundle success does not certify a standalone map.
@@ -127,6 +128,6 @@ No production publication is authorized by this branch. Before release:
 
 ## Cost and scope
 
-Current session incurred no purchased service/subscription/API or store fee. No production infrastructure was provisioned. Runtime use must remain within current provider free limits; unlimited global traffic is not claimed. GitHub public-repo CI, local storage, system geocoding and permitted public feeds are used; upstream availability and map policies still apply. Expo fingerprint transitive `glob`/`minimatch` overrides pin patched versions; revalidate Expo Doctor and exports when changing them.
+Current session incurred no purchased service/subscription/API or store fee. No production infrastructure was provisioned. Runtime use must remain within current provider free limits; unlimited global traffic is not claimed. GitHub public-repo CI, local storage, system geocoding and permitted public feeds are used; upstream availability and map policies still apply. Expo fingerprint and lint-tool transitive `glob`/`minimatch` overrides pin patched versions; revalidate Expo Doctor and exports when changing them.
 
 History, alerts, live routing/FX and grocery/EV data are not implemented; interfaces and a free-budget approach are documented, not advertised as working features. Monetization remains a proposal, with organic ranking separate from any future sponsorship. See [ROADMAP.md](ROADMAP.md), [architecture](docs/ARCHITECTURE.md), [plan](docs/IMPLEMENTATION_PLAN.md) and root [AGENTS.md](../AGENTS.md).
