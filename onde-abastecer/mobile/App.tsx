@@ -1,427 +1,241 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Linking,
-  Platform,
-  Pressable,
-  SafeAreaView,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View
-} from "react-native";
-import * as Location from "expo-location";
-import MapView, { Marker, type Region } from "react-native-maps";
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, FlatList, Linking, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Location from 'expo-location';
+import StationMap from './src/components/StationMap';
+import type { MapRegion } from './src/components/mapTypes';
+import { ApiError, createStationClient } from './src/api/client';
+import { FUEL_LABELS, FUEL_TYPES, LAUNCH_COUNTRIES } from './src/config/countries';
+import { translator, type Language, type TextKey } from './src/config/i18n';
+import { colorForBand, formatPrice } from './src/lib/pricing';
+import { calculateSavings, fillVolume } from '../shared/economy';
+import { decimal, priceFreshness, validCoordinates } from '../shared/normalization';
+import { selectStations, stationKey, type SortOrder } from '../shared/query';
+import type { CountryCode, FuelType, Station } from './src/types';
 
-import { getStations } from "./src/api/client";
-import { FUEL_LABELS, FUEL_TYPES, LAUNCH_COUNTRIES } from "./src/config/countries";
-import { colorForBand, formatPrice } from "./src/lib/pricing";
-import type { CountryCode, FuelType, Station } from "./src/types";
-
-const DEFAULT_REGION: Region = {
-  latitude: 42.2406,
-  longitude: -8.7207,
-  latitudeDelta: 0.18,
-  longitudeDelta: 0.18
-};
-
-const SUPPORTED_COUNTRIES = new Set<CountryCode>(
-  LAUNCH_COUNTRIES.map((country) => country.code)
-);
-
-export default function App() {
-  const mapRef = useRef<MapView>(null);
-  const firstLoadDone = useRef(false);
-
-  const [country, setCountry] = useState<CountryCode>("ES");
-  const [fuel, setFuel] = useState<FuelType>("gasoline95");
-  const [region, setRegion] = useState<Region>(DEFAULT_REGION);
+const INITIAL: MapRegion = { latitude: 42.2406, longitude: -8.7207, latitudeDelta: 0.18, longitudeDelta: 0.18 };
+const client = createStationClient({ baseUrl: process.env.EXPO_PUBLIC_API_URL, storage: AsyncStorage });
+const PREF_KEY = 'oa:preferences:v1';
+const FAV_KEY = 'oa:favorites:v1';
+const DEFAULT_VEHICLE = { liters: '40', consumption: '6', capacity: '50', remaining: '20' };
+function Button({ label, onPress, active = false, disabled = false }: { label: string; onPress: () => void; active?: boolean; disabled?: boolean }) {
+  return <Pressable accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ selected: active, disabled }} onPress={onPress} disabled={disabled} style={({ pressed }) => [styles.button, active && styles.activeButton, (pressed || disabled) && { opacity: 0.65 }]}><Text style={[styles.buttonText, active && styles.activeText]}>{label}</Text></Pressable>;
+}
+function Field({ label, value, set, placeholder }: { label: string; value: string; set: (v: string) => void; placeholder?: string }) {
+  return <View style={styles.field}><Text style={styles.label}>{label}</Text><TextInput accessibilityLabel={label} value={value} onChangeText={set} placeholder={placeholder} keyboardType="decimal-pad" style={styles.input} /></View>;
+}
+function Application() {
+  const [language, setLanguage] = useState<Language>('pt');
+  const t = translator(language);
+  const { width } = useWindowDimensions();
+  const wide = width >= 900;
+  const [country, setCountry] = useState<CountryCode>('ES');
+  const [fuel, setFuel] = useState<FuelType>('gasoline95');
+  const [center, setCenter] = useState(INITIAL);
+  const [mapRegion, setMapRegion] = useState(INITIAL);
+  const [radius, setRadius] = useState(30);
+  const [search, setSearch] = useState('');
   const [stations, setStations] = useState<Station[]>([]);
   const [selected, setSelected] = useState<Station | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [banner, setBanner] = useState("Carregando postos próximos…");
-
-  const visibleStations = useMemo(
-    () => stations.filter((station) => station.prices.some((price) => price.fuel === fuel)),
-    [stations, fuel]
-  );
+  const [reference, setReference] = useState<Station | null>(null);
+  const [mode, setMode] = useState<'map' | 'list'>('map');
+  const [panel, setPanel] = useState<'filters' | 'vehicle' | null>(null);
+  const [brand, setBrand] = useState('');
+  const [maxPrice, setMaxPrice] = useState('');
+  const [only24h, setOnly24h] = useState(false);
+  const [service, setService] = useState('');
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [favorites, setFavorites] = useState<string[]>([]);
+  const [sort, setSort] = useState<SortOrder>('price');
+  const [vehicle, setVehicle] = useState(DEFAULT_VEHICLE);
+  const [volumeMode, setVolumeMode] = useState<'manual' | 'tank'>('manual');
+  const [detourMode, setDetourMode] = useState<'return' | 'route'>('route');
+  const [extraKm, setExtraKm] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [locating, setLocating] = useState(false);
+  const [locationGranted, setLocationGranted] = useState(false);
+  const [error, setError] = useState<TextKey | null>(null);
+  const [notice, setNotice] = useState<TextKey | null>(null);
+  const [offline, setOffline] = useState(false);
+  const [retrievedAt, setRetrievedAt] = useState('');
+  const [refresh, setRefresh] = useState(0);
+  const locationRequest = useRef(0);
+  const query = useMemo(() => ({ country, fuel, latitude: center.latitude, longitude: center.longitude, radiusKm: radius }), [country, fuel, center, radius]);
 
   useEffect(() => {
-    void locateAndLoad();
+    let active = true;
+    void Promise.all([AsyncStorage.getItem(FAV_KEY), AsyncStorage.getItem(PREF_KEY)]).then(([fav, pref]) => {
+      if (!active) return;
+      if (fav) { const value = JSON.parse(fav); if (Array.isArray(value)) setFavorites(value.filter(v => typeof v === 'string').slice(0, 200)); }
+      if (pref) {
+        const value = JSON.parse(pref);
+        if (value.language === 'pt' || value.language === 'en') setLanguage(value.language);
+        if (value.vehicle && Object.values(value.vehicle).every(v => typeof v === 'string' && decimal(v) != null)) setVehicle({ ...DEFAULT_VEHICLE, ...value.vehicle });
+      }
+    }).catch(() => { if (active) setNotice('storageFailed'); });
+    return () => { active = false; locationRequest.current++; };
   }, []);
-
   useEffect(() => {
-    if (firstLoadDone.current) {
-      void loadStations(region, country);
-    }
-  }, [fuel, country]);
+    const controller = new AbortController();
+    setLoading(true); setError(null); setStations([]); setSelected(null); setOffline(false); setRetrievedAt('');
+    void client(query, controller.signal).then(result => {
+      if (controller.signal.aborted) return;
+      setStations(result.stations); setOffline(result.cache === 'offline'); setRetrievedAt(result.retrievedAt);
+    }).catch(e => {
+      if (!controller.signal.aborted) setError(e instanceof ApiError && e.code in ERROR_KEYS ? ERROR_KEYS[e.code] ?? 'network_error' : 'network_error');
+    }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [query, refresh]);
 
-  async function detectCountry(
-    latitude: number,
-    longitude: number
-  ): Promise<CountryCode | undefined> {
-    try {
-      const addresses = await Location.reverseGeocodeAsync({ latitude, longitude });
-      const code = addresses[0]?.isoCountryCode?.toUpperCase() as CountryCode | undefined;
-      return code && SUPPORTED_COUNTRIES.has(code) ? code : undefined;
-    } catch {
-      return undefined;
-    }
+  const visible = useMemo(() => selectStations(stations, fuel, { brand, maxPrice: decimal(maxPrice), only24h, service, favorites, onlyFavorites: favoritesOnly }, center, sort), [stations, fuel, brand, maxPrice, only24h, service, favorites, favoritesOnly, center, sort]);
+  const brands = [...new Set(stations.map(s => s.brand).filter((v): v is string => !!v))].sort();
+  const services = [...new Set(stations.flatMap(s => s.services ?? []))].sort();
+  const selectedPrice = selected?.prices.find(p => p.fuel === fuel);
+  const referencePrice = reference?.prices.find(p => p.fuel === fuel);
+  const liters = volumeMode === 'manual' ? decimal(vehicle.liters) : fillVolume(decimal(vehicle.capacity) ?? NaN, decimal(vehicle.remaining) ?? NaN);
+  const savings = selectedPrice && referencePrice && !offline ? calculateSavings({ reference: referencePrice, candidate: selectedPrice, liters: liters ?? NaN, consumptionLitersPer100Km: decimal(vehicle.consumption) ?? NaN, detour: decimal(extraKm) == null ? undefined : detourMode === 'return' ? { mode: 'return', oneWayKm: decimal(extraKm)! } : { mode: 'route', additionalKm: decimal(extraKm)! } }) : null;
+
+  function selectStation(station: Station) { setExtraKm(''); setSelected(station); }
+  function clearFilters() { setBrand(''); setMaxPrice(''); setOnly24h(false); setService(''); setFavoritesOnly(false); }
+  function chooseCountry(code: CountryCode) {
+    locationRequest.current++; setLocating(false);
+    const item = LAUNCH_COUNTRIES.find(c => c.code === code)!;
+    setCountry(code); setCenter({ ...INITIAL, latitude: item.latitude, longitude: item.longitude }); clearFilters(); setNotice(null);
   }
-
-  async function locateAndLoad() {
+  function chooseFuel(next: FuelType) { locationRequest.current++; setLocating(false); setFuel(next); setReference(null); setExtraKm(''); clearFilters(); }
+  async function locate() {
+    const request = ++locationRequest.current;
+    setLocating(true); setNotice(null);
     try {
       const permission = await Location.requestForegroundPermissionsAsync();
-
-      if (permission.status === "granted") {
-        const location = await Location.getCurrentPositionAsync({
-          accuracy: Location.Accuracy.Balanced
-        });
-
-        const nextRegion: Region = {
-          latitude: location.coords.latitude,
-          longitude: location.coords.longitude,
-          latitudeDelta: 0.18,
-          longitudeDelta: 0.18
-        };
-
-        const detectedCountry =
-          (await detectCountry(nextRegion.latitude, nextRegion.longitude)) ?? country;
-
-        setRegion(nextRegion);
-        setCountry(detectedCountry);
-        mapRef.current?.animateToRegion(nextRegion, 500);
-        await loadStations(nextRegion, detectedCountry);
-        firstLoadDone.current = true;
-        return;
-      }
-
-      setBanner("Localização desativada. Você ainda pode explorar o mapa.");
-      await loadStations(DEFAULT_REGION, country);
-      firstLoadDone.current = true;
-    } catch {
-      setBanner("Não conseguimos obter sua localização. Mostrando a região inicial.");
-      await loadStations(DEFAULT_REGION, country);
-      firstLoadDone.current = true;
-    }
+      if (request !== locationRequest.current) return;
+      if (permission.status !== 'granted') { setNotice('permission'); return; }
+      setLocationGranted(true);
+      const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      const addresses = await Location.reverseGeocodeAsync(position.coords).catch(() => []);
+      if (request !== locationRequest.current) return;
+      const code = addresses[0]?.isoCountryCode?.toUpperCase();
+      if (!code || !LAUNCH_COUNTRIES.some(c => c.code === code)) { setNotice('unsupported_country'); return; }
+      setCountry(code as CountryCode); clearFilters(); setCenter({ ...INITIAL, latitude: position.coords.latitude, longitude: position.coords.longitude }); setNotice('gps');
+    } catch { if (request === locationRequest.current) setNotice('locationFailed'); }
+    finally { if (request === locationRequest.current) setLocating(false); }
   }
-
-  async function loadStations(target: Region, requestedCountry: CountryCode) {
-    setLoading(true);
-
+  async function manualSearch() {
+    const request = ++locationRequest.current; setLocating(false);
+    setNotice(null);
+    const pair = search.trim().match(/^(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)$/);
+    if (pair) {
+      const latitude = Number(pair[1]), longitude = Number(pair[2]);
+      if (!validCoordinates(latitude, longitude)) { setNotice('invalid_coordinates'); return; }
+      setCenter({ ...INITIAL, latitude, longitude }); return;
+    }
+    if (Platform.OS === 'web') { setNotice('webSearch'); return; }
+    if (!search.trim()) { setNotice('addressFailed'); return; }
+    setLocating(true);
     try {
-      const result = await getStations({
-        country: requestedCountry,
-        latitude: target.latitude,
-        longitude: target.longitude,
-        radiusKm: 30,
-        fuel
-      });
-
-      setStations(result.stations);
-      setSelected(null);
-      setBanner(
-        result.message ??
-          (result.stations.length
-            ? `${result.stations.length} postos encontrados · ${FUEL_LABELS[fuel]}`
-            : "Nenhum preço encontrado nesta área.")
-      );
-    } catch {
-      setStations([]);
-      setBanner("Falha ao carregar os preços. Tente novamente.");
-    } finally {
-      setLoading(false);
-    }
+      // Android requires this permission even for its system geocoding service.
+      if (Platform.OS === 'android') {
+        const permission = await Location.requestForegroundPermissionsAsync();
+        if (permission.status !== 'granted') { setNotice('permission'); return; }
+      }
+      const countryName = LAUNCH_COUNTRIES.find(c => c.code === country)!.name;
+      const results = await Location.geocodeAsync(`${search.trim()}, ${countryName}`);
+      if (request !== locationRequest.current) return;
+      const result = results[0];
+      if (!result || !validCoordinates(result.latitude, result.longitude)) { setNotice('addressFailed'); return; }
+      setCenter({ ...INITIAL, latitude: result.latitude, longitude: result.longitude });
+    } catch { if (request === locationRequest.current) setNotice('addressFailed'); }
+    finally { if (request === locationRequest.current) setLocating(false); }
   }
-
-  function priceFor(station: Station) {
-    return station.prices.find((price) => price.fuel === fuel);
+  async function toggleFavorite(station: Station) {
+    const key = stationKey(station);
+    const next = favorites.includes(key) ? favorites.filter(v => v !== key) : [...favorites, key].slice(-200);
+    setFavorites(next);
+    try { await AsyncStorage.setItem(FAV_KEY, JSON.stringify(next)); } catch { setNotice('storageFailed'); }
   }
-
-  function openNavigation(station: Station) {
+  async function saveVehicle() {
+    if (!Object.values(vehicle).every(v => decimal(v) != null) || (decimal(vehicle.liters) ?? 0) <= 0 || (decimal(vehicle.consumption) ?? 0) <= 0 || fillVolume(decimal(vehicle.capacity) ?? 0, decimal(vehicle.remaining) ?? -1) == null) { setNotice('invalidVehicle'); return; }
+    try { await AsyncStorage.setItem(PREF_KEY, JSON.stringify({ language, vehicle })); setNotice('saved'); } catch { setNotice('storageFailed'); }
+  }
+  async function openNavigation(station: Station) {
     const destination = `${station.latitude},${station.longitude}`;
-    const url =
-      Platform.OS === "ios"
-        ? `http://maps.apple.com/?daddr=${destination}&dirflg=d`
-        : `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
-
-    void Linking.openURL(url);
+    const url = Platform.OS === 'ios' ? `https://maps.apple.com/?daddr=${destination}&dirflg=d` : `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving`;
+    try { await Linking.openURL(url); } catch { setNotice('navigationFailed'); }
   }
-
-  return (
-    <SafeAreaView style={styles.safe}>
-      <View style={styles.header}>
-        <View style={styles.headerCopy}>
-          <Text style={styles.brand}>ONDE ABASTECER</Text>
-          <Text style={styles.subtitle}>{banner}</Text>
-        </View>
-        {loading ? <ActivityIndicator /> : null}
-      </View>
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.countryFilters}
-      >
-        {LAUNCH_COUNTRIES.map((item) => (
-          <Pressable
-            key={item.code}
-            onPress={() => setCountry(item.code)}
-            style={[styles.countryChip, country === item.code && styles.countryChipActive]}
-          >
-            <Text style={styles.countryFlag}>{item.flag}</Text>
-            <Text
-              style={[
-                styles.countryChipText,
-                country === item.code && styles.countryChipTextActive
-              ]}
-            >
-              {item.code}
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.filters}
-      >
-        {FUEL_TYPES.map((item) => (
-          <Pressable
-            key={item}
-            onPress={() => setFuel(item)}
-            style={[styles.chip, fuel === item && styles.chipActive]}
-          >
-            <Text style={[styles.chipText, fuel === item && styles.chipTextActive]}>
-              {FUEL_LABELS[item]}
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
-
-      <View style={styles.mapWrap}>
-        <MapView
-          ref={mapRef}
-          style={StyleSheet.absoluteFill}
-          initialRegion={DEFAULT_REGION}
-          showsUserLocation
-          showsMyLocationButton
-          onRegionChangeComplete={setRegion}
-          onPress={() => setSelected(null)}
-        >
-          {visibleStations.map((station) => {
-            const price = priceFor(station);
-            if (!price) return null;
-
-            return (
-              <Marker
-                key={station.id}
-                coordinate={{ latitude: station.latitude, longitude: station.longitude }}
-                onPress={() => setSelected(station)}
-                tracksViewChanges={false}
-              >
-                <View style={[styles.marker, { backgroundColor: colorForBand(station.priceBand) }]}>
-                  <Text style={styles.markerPrice}>{price.price.toFixed(3)}</Text>
-                </View>
-              </Marker>
-            );
-          })}
-        </MapView>
-
-        <View style={styles.legend}>
-          <Text style={styles.legendText}>barato</Text>
-          {([1, 2, 3, 4, 5] as const).map((band) => (
-            <View
-              key={band}
-              style={[styles.legendDot, { backgroundColor: colorForBand(band) }]}
-            />
-          ))}
-          <Text style={styles.legendText}>caro</Text>
-        </View>
-
-        <Pressable
-          style={styles.searchHere}
-          onPress={() => void loadStations(region, country)}
-        >
-          <Text style={styles.searchHereText}>Buscar nesta área</Text>
-        </Pressable>
-
-        {selected ? (
-          <View style={styles.card}>
-            <View style={styles.cardTop}>
-              <View style={styles.cardTitleWrap}>
-                <Text style={styles.stationName}>{selected.brand || selected.name}</Text>
-                <Text style={styles.address}>{selected.address}</Text>
-              </View>
-              {priceFor(selected) ? (
-                <Text style={styles.bigPrice}>
-                  {formatPrice(priceFor(selected)!.price, priceFor(selected)!.currency)}
-                </Text>
-              ) : null}
-            </View>
-
-            {selected.isDemo ? (
-              <Text style={styles.demo}>DADOS DE DEMONSTRAÇÃO</Text>
-            ) : null}
-
-            <Text style={styles.meta}>
-              {selected.openingHours ? `${selected.openingHours} · ` : ""}
-              Fonte: {selected.source}
-            </Text>
-
-            <Pressable
-              style={styles.routeButton}
-              onPress={() => openNavigation(selected)}
-            >
-              <Text style={styles.routeButtonText}>Ir para este posto</Text>
-            </Pressable>
+  async function share(station: Station) {
+    try { await Share.share({ message: `${station.name}\n${station.address}\n${selectedPrice ? formatPrice(selectedPrice.price, selectedPrice.currency, language) + '/L' : ''}\n${station.source}\n${selectedPrice?.updatedAt ?? t('unknownAge')}\nhttps://www.google.com/maps/search/?api=1&query=${station.latitude},${station.longitude}` }); } catch { setNotice('navigationFailed'); }
+  }
+  function date(raw?: string) { return raw && Number.isFinite(Date.parse(raw)) ? new Date(raw).toLocaleString(language === 'pt' ? 'pt-PT' : 'en-GB') : t('unknown'); }
+  function age(station: Station): string {
+    const p = station.prices.find(p => p.fuel === fuel);
+    if (!p) return t('unknownAge');
+    return t(priceFreshness(p) === 'fresh' ? 'fresh' : priceFreshness(p) === 'stale' ? 'stale' : 'unknownAge');
+  }
+  const vehicleFields = <>
+    <View style={styles.row}><Button label={t('volumeMode')} active={volumeMode === 'manual'} onPress={() => setVolumeMode('manual')} /><Button label={t('tankMode')} active={volumeMode === 'tank'} onPress={() => setVolumeMode('tank')} /></View>
+    <View style={styles.wrap}>{(['liters', 'consumption', 'capacity', 'remaining'] as const).map(key => <Field key={key} label={t(key)} value={vehicle[key]} set={v => setVehicle(old => ({ ...old, [key]: v }))} />)}</View>
+    <Button label={t('saveVehicle')} onPress={() => void saveVehicle()} />
+  </>;
+  function stationRow(item: Station & { distanceKm: number }) {
+    const price = item.prices.find(p => p.fuel === fuel)!;
+    return <Pressable accessibilityRole="button" accessibilityLabel={`${item.name}, ${formatPrice(price.price, price.currency, language)}/L, ${item.distanceKm.toFixed(1)} km, ${age(item)}`} onPress={() => selectStation(item)} style={styles.stationRow}>
+      <View style={[styles.pricePill, { backgroundColor: colorForBand(item.priceBand) }]}><Text style={styles.priceValue}>{formatPrice(price.price, price.currency, language)}</Text><Text style={styles.priceUnit}>/ L</Text></View>
+      <View style={styles.stationCopy}><Text style={styles.stationName}>{favorites.includes(stationKey(item)) ? '★ ' : ''}{item.brand || item.name}</Text><Text style={styles.muted}>{item.address}</Text><Text style={styles.age}>{age(item)}</Text></View>
+      <Text style={styles.distance}>{item.distanceKm.toFixed(1)} km{ '\n' }↗</Text>
+    </Pressable>;
+  }
+  return <SafeAreaView style={styles.safe}>
+    <View style={styles.header}><View style={{ flex: 1 }}><Text style={styles.eyebrow}>VISIONE / {t('categories')}</Text><Text accessibilityRole="header" style={styles.title}>Onde Abastecer</Text><Text style={styles.muted}>{t('subtitle')}</Text></View><Button label={language === 'pt' ? 'EN' : 'PT'} onPress={() => setLanguage(language === 'pt' ? 'en' : 'pt')} /></View>
+    <View style={styles.searchRow}><TextInput accessibilityLabel={t('searchPlaceholder')} placeholder={t('searchPlaceholder')} value={search} onChangeText={setSearch} onSubmitEditing={() => void manualSearch()} returnKeyType="search" style={[styles.input, { flex: 1 }]} /><Button label={t('search')} active onPress={() => void manualSearch()} disabled={locating} /></View>
+    <ScrollView horizontal style={styles.horizontal} contentContainerStyle={styles.chips} showsHorizontalScrollIndicator={false}>
+      <Button label={locating ? '…' : `⌖ ${t('locate')}`} onPress={() => void locate()} disabled={locating} />
+      {LAUNCH_COUNTRIES.map(c => <Button key={c.code} label={`${c.flag} ${c.code}${c.available ? '' : ' · ' + t('planned')}`} active={country === c.code} onPress={() => chooseCountry(c.code)} />)}
+    </ScrollView>
+    <ScrollView horizontal style={styles.horizontal} contentContainerStyle={styles.chips} showsHorizontalScrollIndicator={false}>{FUEL_TYPES.map(f => <Button key={f} label={FUEL_LABELS[f]} active={fuel === f} onPress={() => chooseFuel(f)} />)}</ScrollView>
+    <View style={styles.toolbar}><View style={styles.row}><Button label={t('map')} active={mode === 'map'} onPress={() => setMode('map')} /><Button label={`${t('list')} (${visible.length})`} active={mode === 'list'} onPress={() => setMode('list')} /></View><View style={styles.row}><Button label={t('filters')} active={panel === 'filters'} onPress={() => setPanel(panel === 'filters' ? null : 'filters')} /><Button label={t('vehicle')} active={panel === 'vehicle'} onPress={() => setPanel(panel === 'vehicle' ? null : 'vehicle')} /></View></View>
+    {panel ? <ScrollView style={styles.panel} contentContainerStyle={styles.panelContent}>{panel === 'vehicle' ? <>{vehicleFields}<Text style={styles.muted}>{t('privacy')}</Text><Button label={t('resetLocal')} onPress={() => { void AsyncStorage.multiRemove([FAV_KEY, PREF_KEY, 'oa:lastSearch:v1']).then(() => { setFavorites([]); setVehicle(DEFAULT_VEHICLE); setStations([]); setReference(null); setNotice('resetDone'); }).catch(() => setNotice('storageFailed')); }} /></> : <>
+      <Text style={styles.label}>{t('radius')}</Text><View style={styles.wrap}>{[5, 10, 30, 50, 100].map(r => <Button key={r} label={`${r} km`} active={radius === r} onPress={() => setRadius(r)} />)}</View>
+      <Field label={t('maxPrice')} value={maxPrice} set={setMaxPrice} />
+      {brands.length ? <><Text style={styles.label}>{t('brand')}</Text><View style={styles.wrap}><Button label={t('all')} active={!brand} onPress={() => setBrand('')} />{brands.map(b => <Button key={b} label={b} active={brand === b} onPress={() => setBrand(b)} />)}</View></> : null}
+      {stations.some(s => s.automated24h) ? <View style={styles.toggle}><Text style={styles.body}>{t('only24')}</Text><Switch accessibilityLabel={t('only24')} value={only24h} onValueChange={setOnly24h} /></View> : null}
+      {services.length ? <><Text style={styles.label}>{t('service')}</Text><View style={styles.wrap}><Button label={t('all')} active={!service} onPress={() => setService('')} />{services.map(s => <Button key={s} label={s} active={service === s} onPress={() => setService(s)} />)}</View></> : null}
+      <View style={styles.toggle}><Text style={styles.body}>{t('favoritesOnly')}</Text><Switch accessibilityLabel={t('favoritesOnly')} value={favoritesOnly} onValueChange={setFavoritesOnly} /></View><Button label={t('clear')} onPress={clearFilters} />
+    </>}</ScrollView> : null}
+    {notice ? <Text accessibilityLiveRegion="polite" style={styles.notice}>{t(notice)}</Text> : null}
+    {loading ? <View accessibilityLiveRegion="polite" style={styles.status}><ActivityIndicator color="#176C50" /><Text style={styles.body}>{t('loading')}</Text></View> : error ? <View accessibilityLiveRegion="assertive" style={styles.error}><Text style={styles.body}>{t(error)}</Text><Button label={t('retry')} onPress={() => setRefresh(r => r + 1)} /></View> : null}
+    {offline ? <Text accessibilityLiveRegion="polite" style={styles.offline}>{t('offline')} · {date(retrievedAt)}</Text> : null}
+    <View style={[styles.content, wide && styles.wide]}>
+      {mode === 'map' ? <View style={styles.map}><StationMap center={center} stations={visible} fuel={fuel} onSelect={selectStation} onRegionChange={setMapRegion} locationGranted={locationGranted} /><View style={styles.mapAction}><Button label={t('searchHere')} active onPress={() => { setCenter({ ...mapRegion }); setRefresh(v => v + 1); }} /></View><View style={styles.legend}><Text style={styles.muted}>{t('price')}</Text>{([1, 2, 3, 4, 5] as const).map(b => <View key={b} style={[styles.dot, { backgroundColor: colorForBand(b) }]} />)}</View></View> : null}
+      {(mode === 'list' || wide) ? <View style={[styles.list, wide && mode === 'map' && { maxWidth: 460 }]}><View style={styles.listHeader}><Text accessibilityRole="header" style={styles.heading}>{visible.length} {t('list').toLowerCase()}</Text><View style={styles.row}><Button label={t('price')} active={sort === 'price'} onPress={() => setSort('price')} /><Button label={t('distance')} active={sort === 'distance'} onPress={() => setSort('distance')} /></View></View><Text style={styles.small}>{t('straight')}</Text><FlatList data={visible} keyExtractor={stationKey} renderItem={({ item }) => stationRow(item)} ListEmptyComponent={!loading && !error ? <Text style={styles.empty}>{t('empty')}</Text> : null} ListFooterComponent={<View style={styles.footer}><Text style={styles.small}>{t('published')}</Text><Text style={styles.small}>{retrievedAt ? `${t('received')}: ${date(retrievedAt)}` : ''}</Text><Text style={styles.small}>{t('future')}</Text></View>} /></View> : null}
+      {mode === 'map' && !wide && !loading && !error && visible.length === 0 ? <View pointerEvents="none" style={styles.mapEmpty}><Text style={styles.body}>{t('empty')}</Text></View> : null}
+    </View>
+    <Text style={styles.bottomNote}>{t('published')}</Text>
+    <Modal visible={!!selected} animationType="slide" onRequestClose={() => setSelected(null)} transparent>
+      <View style={styles.modalOverlay}><SafeAreaView style={styles.modalSheet}><View style={styles.modalHeader}><Text accessibilityRole="header" style={styles.heading}>{t('details')}</Text><Button label={t('close')} onPress={() => setSelected(null)} /></View><ScrollView contentContainerStyle={styles.details}>
+        {selected && selectedPrice ? <>
+          <Text style={styles.title}>{selected.brand || selected.name}</Text><Text style={styles.body}>{selected.address}</Text><Text style={styles.detailPrice}>{formatPrice(selectedPrice.price, selectedPrice.currency, language)} / L</Text><Text style={styles.body}>{selectedPrice.label || FUEL_LABELS[fuel]} · {selected.country}</Text>
+          <Text style={styles.age}>{age(selected)}</Text><Text style={styles.small}>{t(selectedPrice.timestampKind === 'feed' ? 'feedUpdated' : 'updated')}: {date(selectedPrice.updatedAt)}</Text>{selectedPrice.reportedAt ? <Text style={styles.small}>{selectedPrice.reportedAt}</Text> : null}
+          <Text style={styles.body}>{t('source')}: {selected.source}</Text><Text style={styles.small}>{t('legal')}</Text>
+          {selected.sourceUrl ? <Button label={t('sourceLink')} onPress={() => { if (selected.sourceUrl?.startsWith('https://')) void Linking.openURL(selected.sourceUrl).catch(() => setNotice('navigationFailed')); }} /> : null}
+          <Text style={styles.body}>{t('hours')}: {selected.openingHours || t('unknown')}</Text><Text style={styles.body}>{selectedPrice.serviceMode === 'self' ? t('self') : selectedPrice.serviceMode === 'attended' ? t('attended') : t('modeUnknown')}</Text>{selected.services?.length ? <Text style={styles.body}>{t('services')}: {selected.services.join(', ')}</Text> : null}
+          <View style={styles.wrap}><Button label={t('navigate')} active onPress={() => void openNavigation(selected)} /><Button label={t('share')} onPress={() => void share(selected)} /><Button label={favorites.includes(stationKey(selected)) ? t('unfavorite') : t('favorite')} onPress={() => void toggleFavorite(selected)} /></View>
+          <Button label={t('reference')} onPress={() => { setReference(selected); setSelected(null); setExtraKm(''); }} />
+          <View style={styles.savings}><Text accessibilityRole="header" style={styles.heading}>{t('savings')}</Text>{reference ? <Text style={styles.body}>{t('referenceSet')}: {reference.name} · {reference.country}</Text> : <Text style={styles.body}>{t('noReference')}</Text>}
+            {vehicleFields}
+            <View style={styles.wrap}><Button label={t('routeMode')} active={detourMode === 'route'} onPress={() => { setDetourMode('route'); setExtraKm(''); }} /><Button label={t('returnMode')} active={detourMode === 'return'} onPress={() => { setDetourMode('return'); setExtraKm(''); }} /></View><Field label={t(detourMode === 'return' ? 'oneWay' : 'extraKm')} value={extraKm} set={setExtraKm} />
+            <Text style={styles.small}>{t('basis')}</Text>
+            {savings?.status === 'ok' ? <><Text style={styles.body}>{t('gross')}: {formatPrice(savings.gross, savings.currency, language)}</Text><Text style={styles.body}>{t('travel')}: {formatPrice(savings.travelCost, savings.currency, language)} · {savings.additionalKm} km</Text><Text style={styles.net}>{t('net')}: {formatPrice(savings.net, savings.currency, language)}</Text><Text style={styles.small}>{t('assumptions')}</Text></> : <Text style={styles.age}>{t('insufficient')}{offline ? `: ${t('offlineReason')}` : savings?.status === 'insufficient' ? `: ${t(REASON_KEYS[savings.reason] ?? 'unknown')}` : ''}</Text>}
+            <Text style={styles.small}>{t('formula')}</Text>
           </View>
-        ) : null}
-      </View>
-    </SafeAreaView>
-  );
+        </> : null}
+      </ScrollView></SafeAreaView></View>
+    </Modal>
+  </SafeAreaView>;
 }
-
+const ERROR_KEYS: Record<string, TextKey> = { rate_limited: 'rate_limited', api_not_configured: 'api_not_configured', network_error: 'network_error', source_unavailable: 'source_unavailable', country_not_live_yet: 'country_not_live_yet', unsupported_country: 'unsupported_country', invalid_response: 'invalid_response', request_rejected: 'request_rejected', invalid_coordinates: 'invalid_coordinates', invalid_radius: 'invalid_radius', invalid_fuel: 'invalid_fuel' };
+const REASON_KEYS: Record<string, TextKey> = { currency: 'currency', fuel: 'fuel', service_mode: 'service_mode', unit_or_price: 'unit_or_price', timestamp: 'timestamp', vehicle: 'vehicleReason', road_distance: 'road_distance' };
+export default function App() { return <SafeAreaProvider><Application /></SafeAreaProvider>; }
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: "#F7F7F5" },
-  header: {
-    paddingHorizontal: 18,
-    paddingTop: 8,
-    paddingBottom: 4,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center"
-  },
-  headerCopy: { flex: 1, paddingRight: 12 },
-  brand: {
-    fontSize: 22,
-    fontWeight: "900",
-    letterSpacing: -0.7,
-    color: "#111827"
-  },
-  subtitle: { marginTop: 3, fontSize: 12, color: "#6B7280" },
-  countryFilters: {
-    paddingHorizontal: 14,
-    paddingTop: 6,
-    paddingBottom: 2,
-    gap: 7
-  },
-  countryChip: {
-    height: 34,
-    paddingHorizontal: 10,
-    borderRadius: 17,
-    backgroundColor: "#FFFFFF",
-    justifyContent: "center",
-    alignItems: "center",
-    flexDirection: "row",
-    gap: 5,
-    borderWidth: 1,
-    borderColor: "#E5E7EB"
-  },
-  countryChipActive: {
-    borderColor: "#111827",
-    backgroundColor: "#111827"
-  },
-  countryFlag: { fontSize: 15 },
-  countryChipText: {
-    fontSize: 11,
-    fontWeight: "900",
-    color: "#374151"
-  },
-  countryChipTextActive: { color: "#FFFFFF" },
-  filters: { paddingHorizontal: 14, paddingVertical: 8, gap: 8 },
-  chip: {
-    height: 38,
-    paddingHorizontal: 14,
-    borderRadius: 19,
-    backgroundColor: "#FFFFFF",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#E5E7EB"
-  },
-  chipActive: { backgroundColor: "#111827", borderColor: "#111827" },
-  chipText: { fontSize: 13, fontWeight: "700", color: "#374151" },
-  chipTextActive: { color: "#FFFFFF" },
-  mapWrap: { flex: 1, overflow: "hidden" },
-  marker: {
-    minWidth: 62,
-    height: 34,
-    paddingHorizontal: 8,
-    borderRadius: 17,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 2,
-    borderColor: "#FFFFFF"
-  },
-  markerPrice: { color: "#FFFFFF", fontSize: 12, fontWeight: "900" },
-  legend: {
-    position: "absolute",
-    top: 12,
-    left: 12,
-    backgroundColor: "rgba(255,255,255,0.95)",
-    borderRadius: 18,
-    paddingHorizontal: 10,
-    height: 34,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 5
-  },
-  legendText: { fontSize: 10, fontWeight: "700", color: "#6B7280" },
-  legendDot: { width: 8, height: 8, borderRadius: 4 },
-  searchHere: {
-    position: "absolute",
-    top: 56,
-    alignSelf: "center",
-    backgroundColor: "#111827",
-    paddingHorizontal: 16,
-    height: 40,
-    borderRadius: 20,
-    justifyContent: "center"
-  },
-  searchHereText: { color: "#FFFFFF", fontWeight: "800", fontSize: 13 },
-  card: {
-    position: "absolute",
-    left: 12,
-    right: 12,
-    bottom: 14,
-    backgroundColor: "#FFFFFF",
-    borderRadius: 22,
-    padding: 16,
-    shadowColor: "#000000",
-    shadowOpacity: 0.14,
-    shadowRadius: 14,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 6
-  },
-  cardTop: {
-    flexDirection: "row",
-    gap: 12,
-    justifyContent: "space-between"
-  },
-  cardTitleWrap: { flex: 1 },
-  stationName: { fontSize: 17, fontWeight: "900", color: "#111827" },
-  address: { marginTop: 3, fontSize: 12, color: "#6B7280" },
-  bigPrice: { fontSize: 20, fontWeight: "900", color: "#111827" },
-  demo: {
-    alignSelf: "flex-start",
-    marginTop: 10,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 7,
-    backgroundColor: "#FEF3C7",
-    color: "#92400E",
-    fontSize: 10,
-    fontWeight: "900"
-  },
-  meta: { marginTop: 10, fontSize: 11, color: "#6B7280" },
-  routeButton: {
-    marginTop: 12,
-    height: 46,
-    borderRadius: 14,
-    backgroundColor: "#111827",
-    alignItems: "center",
-    justifyContent: "center"
-  },
-  routeButtonText: { color: "#FFFFFF", fontWeight: "900" }
+  safe: { flex: 1, backgroundColor: '#F5F5F0' }, header: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 12 }, eyebrow: { fontSize: 11, letterSpacing: 2, color: '#476B5B', fontWeight: '800', textTransform: 'uppercase', marginBottom: 4 }, title: { fontSize: 27, lineHeight: 34, fontWeight: '800', color: '#183A36', letterSpacing: -0.8 }, muted: { color: '#53645F', fontSize: 12, lineHeight: 18 }, small: { color: '#53645F', fontSize: 12, lineHeight: 18 }, body: { color: '#243D35', fontSize: 14, lineHeight: 21, flexShrink: 1 }, searchRow: { flexDirection: 'row', paddingHorizontal: 16, gap: 8, paddingBottom: 6 }, input: { backgroundColor: '#FFF', borderColor: '#B8C7BE', borderWidth: 1, borderRadius: 12, minHeight: 46, paddingHorizontal: 12, color: '#183A36', fontSize: 14 }, button: { borderRadius: 12, minHeight: 44, paddingVertical: 10, paddingHorizontal: 13, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF', borderWidth: 1, borderColor: '#D6DED5' }, activeButton: { backgroundColor: '#183A36', borderColor: '#183A36' }, buttonText: { fontSize: 12, color: '#294B3C', fontWeight: '700' }, activeText: { color: '#FFF' }, horizontal: { flexGrow: 0, flexShrink: 0 }, chips: { paddingHorizontal: 16, gap: 6, paddingVertical: 4, alignItems: 'center' }, row: { flexDirection: 'row', gap: 6, alignItems: 'center' }, wrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, alignItems: 'center' }, toolbar: { paddingHorizontal: 16, paddingVertical: 8, flexDirection: 'row', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between' }, panel: { maxHeight: 240, flexGrow: 0, backgroundColor: '#EAF0E7', borderTopWidth: 1, borderBottomWidth: 1, borderColor: '#D6DED5' }, panelContent: { padding: 16, gap: 12 }, field: { minWidth: 140, flexGrow: 1, flexBasis: 140, gap: 5 }, label: { color: '#294B3C', fontSize: 12, fontWeight: '700', marginBottom: 2 }, toggle: { flexDirection: 'row', justifyContent: 'space-between', gap: 12, alignItems: 'center' }, status: { flexDirection: 'row', gap: 10, paddingHorizontal: 18, paddingVertical: 8 }, error: { backgroundColor: '#FFE5DE', paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', justifyContent: 'space-between', gap: 12, alignItems: 'center' }, notice: { backgroundColor: '#EAF0E7', color: '#294B3C', paddingHorizontal: 16, paddingVertical: 8, fontSize: 12 }, offline: { backgroundColor: '#FFF0C4', color: '#704C00', padding: 10, fontSize: 12, fontWeight: '800' }, content: { flex: 1, minHeight: 220 }, wide: { flexDirection: 'row' }, map: { flex: 1, minHeight: 240, position: 'relative' }, mapAction: { position: 'absolute', top: 12, alignSelf: 'center', zIndex: 2 }, legend: { flexDirection: 'row', gap: 6, alignItems: 'center', position: 'absolute', bottom: 24, left: 12, backgroundColor: '#FFFFFFEE', borderRadius: 12, padding: 10 }, dot: { height: 9, width: 9, borderRadius: 5 }, list: { flex: 1, backgroundColor: '#F8FAF5' }, listHeader: { paddingHorizontal: 16, paddingTop: 10, flexDirection: 'row', gap: 10, justifyContent: 'space-between', alignItems: 'center' }, heading: { color: '#183A36', fontSize: 17, fontWeight: '800' }, stationRow: { padding: 14, borderBottomWidth: 1, borderColor: '#DDE5D9', gap: 12, flexDirection: 'row', alignItems: 'center' }, stationCopy: { flex: 1, gap: 4 }, stationName: { color: '#183A36', fontWeight: '800', fontSize: 15 }, pricePill: { borderRadius: 14, paddingHorizontal: 12, paddingVertical: 10, alignItems: 'center' }, priceValue: { color: '#FFF', fontSize: 16, fontWeight: '800' }, priceUnit: { color: '#FFF', fontSize: 11 }, distance: { color: '#294B3C', fontSize: 12, fontWeight: '700', textAlign: 'right' }, age: { color: '#725500', fontWeight: '700', fontSize: 11, lineHeight: 17 }, empty: { color: '#53645F', padding: 24, fontSize: 15 }, footer: { padding: 16, gap: 10 }, bottomNote: { paddingVertical: 6, paddingHorizontal: 16, fontSize: 10, color: '#53645F', backgroundColor: '#F5F5F0' }, mapEmpty: { position: 'absolute', bottom: 20, marginHorizontal: 20, padding: 14, borderRadius: 16, backgroundColor: '#FFFFFFF2', alignSelf: 'center' }, modalOverlay: { flex: 1, backgroundColor: '#0C231E99', justifyContent: 'flex-end', alignItems: 'center' }, modalSheet: { width: '100%', maxWidth: 760, maxHeight: '94%', minHeight: '60%', backgroundColor: '#FAFBF7', borderTopLeftRadius: 24, borderTopRightRadius: 24 }, modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderColor: '#DDE5D9' }, details: { padding: 20, gap: 12, paddingBottom: 50 }, detailPrice: { color: '#176C50', fontSize: 34, fontWeight: '800' }, savings: { marginTop: 8, padding: 16, backgroundColor: '#EBF1E5', borderRadius: 20, gap: 12 }, net: { color: '#183A36', fontSize: 20, fontWeight: '800' }
 });

@@ -9,3 +9,5 @@ dist/
 coverage/
 android/
 ios/
+test-results/
+playwright-report/
