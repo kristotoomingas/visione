@@ -3,6 +3,8 @@ import { expect, test } from '@playwright/test';
 const prices = [1.8, 1.6];
 const stations = prices.map((price, i) => ({ id: `fixture-${i}`, country: 'ES', name: `Fixture station ${i}`, brand: `Test brand ${i}`, address: 'Synthetic test address', latitude: 42.2406 + i * .01, longitude: -8.7207, prices: [{ fuel: 'gasoline95', price, currency: 'EUR', unit: 'L', updatedAt: new Date().toISOString(), timestampKind: 'price' }], source: 'Synthetic fixture only', priceBand: i ? 1 : 5 }));
 test.beforeEach(async ({ page }) => {
+  // CI exercises our map/markers without downloading public OSM tiles.
+  await page.route('https://tile.openstreetmap.org/**', route => route.abort());
   await page.route('**/v1/stations?**', async route => {
     const url = new URL(route.request().url());
     if (url.searchParams.get('country') === 'IT') return route.fulfill({ status: 501, json: { error: 'country_not_live_yet' } });

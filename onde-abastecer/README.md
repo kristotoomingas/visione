@@ -4,6 +4,8 @@ Incremental continuation of [PR #23](https://github.com/pedropzz103-tech/visione
 
 **Enabled, source-probed adapters:** Spain, France, Portugal. **Italy is disabled/unverified** after HTTP 503 during this audit. DE/AT/GB/GR/SI are unavailable/planned or require authorization. See [COUNTRY_COVERAGE.md](COUNTRY_COVERAGE.md) for precise source, reuse and verification evidence. No production deployment or Android/iOS store publication was performed.
 
+Delivery report in Portuguese: [RELATORIO_ENTREGA.md](RELATORIO_ENTREGA.md).
+
 ## Setup and run
 
 Requirements: Node **22.13+** (Node 24 recommended for proxy environments), npm, and a device/emulator for native QA. Run from the repository root:
