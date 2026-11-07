@@ -10,10 +10,11 @@
     "smoke:sources": "tsx scripts/smoke-sources.ts"
   },
   "devDependencies": {
-    "eslint": "^9.39.1",
     "@eslint/js": "^9.39.1",
-    "typescript-eslint": "^8.46.3",
+    "eslint": "^9.39.1",
+    "tsx": "^4.20.6",
     "typescript": "~6.0.3",
-    "tsx": "^4.20.6"
-  }
+    "typescript-eslint": "^8.46.3"
+  },
+  "type": "module"
 }

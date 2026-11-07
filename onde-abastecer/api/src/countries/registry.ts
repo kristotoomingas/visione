@@ -1,6 +1,7 @@
 import { spainAdapter } from "./es";
 import { franceAdapter } from "./fr";
 import { italyAdapter } from "./it";
+import { portugalAdapter } from "./pt";
 import type { CountryAdapter, CountryCode } from "../types";
 
 function planned(
@@ -26,7 +27,7 @@ export const adapters: Record<CountryCode, CountryAdapter> = {
   IT: italyAdapter,
   DE: planned("DE", "approval_required", "Bundeskartellamt · MTS-K", "https://www.bundeskartellamt.de/"),
   AT: planned("AT", "planned", "E-Control · Spritpreisrechner", "https://www.spritpreisrechner.at/"),
-  PT: planned("PT", "licensing_review", "DGEG · Preços dos combustíveis", "https://precoscombustiveis.dgeg.gov.pt/"),
+  PT: portugalAdapter,
   GR: planned("GR", "planned", "Fuel Prices Observatory", "https://www.fuelprices.gr/"),
   SI: planned("SI", "planned", "Goriva.si", "https://www.goriva.si/"),
   GB: planned("GB", "planned", "UK Fuel Finder", "https://www.gov.uk/government/collections/fuel-finder")

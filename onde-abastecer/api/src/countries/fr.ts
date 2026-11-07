@@ -1,139 +1,46 @@
-import { unzipSync } from "fflate";
-import { XMLParser } from "fast-xml-parser";
-
-import { distanceKm } from "../lib/geo";
-import type { CountryAdapter, FuelPrice, FuelType, Station } from "../types";
-
-const ENDPOINT = "https://donnees.roulez-eco.fr/opendata/instantane";
-
-type AnyRecord = Record<string, unknown>;
-
-function asArray<T>(value: T | T[] | undefined): T[] {
-  if (value == null) return [];
-  return Array.isArray(value) ? value : [value];
-}
-
-function textValue(value: unknown): string {
-  if (typeof value === "string" || typeof value === "number") return String(value).trim();
-  if (value && typeof value === "object") {
-    const raw = (value as AnyRecord)["#text"];
-    if (typeof raw === "string" || typeof raw === "number") return String(raw).trim();
-  }
-  return "";
-}
-
-function parseCoordinate(value: unknown): number | undefined {
-  const parsed = Number(String(value ?? "").replace(",", "."));
-  if (!Number.isFinite(parsed)) return undefined;
-  return parsed / 100000;
-}
-
-function normalizeFuel(name: string): FuelType | undefined {
-  const fuel = name.trim().toUpperCase();
-  if (fuel === "GAZOLE") return "diesel";
-  if (fuel === "SP95" || fuel === "E10") return "gasoline95";
-  if (fuel === "SP98") return "gasoline98";
-  if (fuel === "GPLC") return "lpg";
-  return undefined;
-}
-
-function choosePrices(rawPrices: AnyRecord[]): FuelPrice[] {
-  const byFuel = new Map<FuelType, FuelPrice>();
-
-  for (const raw of rawPrices) {
-    const fuel = normalizeFuel(String(raw.nom ?? ""));
-    if (!fuel) continue;
-
-    const price = Number(String(raw.valeur ?? "").replace(",", "."));
-    if (!Number.isFinite(price) || price <= 0) continue;
-
-    const candidate: FuelPrice = {
-      fuel,
-      price,
-      currency: "EUR",
-      updatedAt: String(raw.maj ?? "").trim() || undefined
-    };
-
-    const current = byFuel.get(fuel);
-    if (!current) {
-      byFuel.set(fuel, candidate);
-      continue;
+import { unzipSync } from 'fflate';
+import { XMLParser } from 'fast-xml-parser';
+import { distanceKm } from '../lib/geo';
+import { fetchSource, snapshotCache } from '../lib/source';
+import { decimal, deduplicate, sourceTimestamp, validCoordinates } from '../../../shared/normalization';
+import type { CountryAdapter, FuelPrice, FuelType, Station } from '../types';
+export const FR_ENDPOINT = 'https://donnees.roulez-eco.fr/opendata/instantane';
+type Row = Record<string, unknown>;
+const SOURCE = 'Prix des carburants · Open Data France';
+function array<T>(value: T | T[] | undefined): T[] { return value == null ? [] : Array.isArray(value) ? value : [value]; }
+function text(value: unknown): string { return value && typeof value === 'object' ? String((value as Row)['#text'] ?? '').trim() : String(value ?? '').trim(); }
+const FUELS: Record<string, FuelType> = { Gazole: 'diesel', SP95: 'gasoline95', E10: 'gasoline95e10', SP98: 'gasoline98', GPLc: 'lpg' };
+export function parseFrance(bytes: Uint8Array): Station[] {
+  const archive = unzipSync(bytes, { filter: file => file.name.toLowerCase().endsWith('.xml') && file.originalSize <= 40 * 1024 * 1024 });
+  const entry = Object.values(archive)[0];
+  if (!entry) throw new Error('invalid_source_archive');
+  const prefix = new TextDecoder().decode(entry.slice(0, 100));
+  const xml = new TextDecoder(/ISO-8859-1/i.test(prefix) ? 'iso-8859-1' : 'utf-8').decode(entry);
+  const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '', textNodeName: '#text', parseTagValue: false, parseAttributeValue: false, trimValues: true, processEntities: false });
+  const parsed = parser.parse(xml);
+  if (!parsed.pdv_liste) throw new Error('invalid_source_schema');
+  return deduplicate(array(parsed.pdv_liste.pdv as Row | Row[]).flatMap((raw): Station[] => {
+    const lat = decimal(raw.latitude), lng = decimal(raw.longitude);
+    if (lat == null || lng == null) return [];
+    const latitude = lat / 100000, longitude = lng / 100000;
+    if (!validCoordinates(latitude, longitude) || (latitude === 0 && longitude === 0)) return [];
+    const prices: FuelPrice[] = [];
+    const disruptions = array(raw.rupture as Row | Row[] | undefined);
+    for (const p of array(raw.prix as Row | Row[] | undefined)) {
+      const fuel = FUELS[String(p.nom)], price = decimal(p.valeur);
+      // A fuel with an unclosed outage must not be advertised as available.
+      if (disruptions.some(r => String(r.id) === String(p.id) && !r.fin)) continue;
+      if (fuel && price != null && price > 0) prices.push({ fuel, price, currency: 'EUR', unit: 'L', updatedAt: sourceTimestamp(p.maj, 'Europe/Paris'), reportedAt: text(p.maj), timestampKind: 'price' });
     }
-
-    // Para gasolina 95, o feed francês pode ter SP95 e E10.
-    // Mantemos o menor preço disponível da família para o MVP.
-    if (candidate.price < current.price) byFuel.set(fuel, candidate);
-  }
-
-  return [...byFuel.values()];
+    const city = text(raw.ville);
+    const hours = raw.horaires as Row | undefined;
+    const services = raw.services as Row | undefined;
+    return [{ id: String(raw.id ?? `${latitude},${longitude}`), country: 'FR', name: city ? `Station-service · ${city}` : 'Station-service', address: [text(raw.adresse), text(raw.cp), city].filter(Boolean).join(', '), latitude, longitude, prices, automated24h: hours?.['automate-24-24'] === '1' ? true : undefined, openingHours: hours?.['automate-24-24'] === '1' ? 'Automate 24/24' : undefined, services: array(services?.service as string | string[] | undefined).map(text), source: SOURCE, sourceUrl: FR_ENDPOINT, sourceUpdatedAt: prices.map(p => p.updatedAt).filter((v): v is string => !!v).sort().at(-1) }];
+  }));
 }
-
+const snapshot = snapshotCache(async () => parseFrance(new Uint8Array(await (await fetchSource(FR_ENDPOINT)).arrayBuffer())));
 export const franceAdapter: CountryAdapter = {
-  code: "FR",
-  status: "live",
-  sourceName: "Prix des carburants · Open Data France",
-  sourceUrl: ENDPOINT,
-
-  async listStations(query) {
-    const response = await fetch(ENDPOINT, {
-      headers: { accept: "application/zip, application/octet-stream" },
-      cf: { cacheTtl: 300, cacheEverything: true }
-    });
-
-    if (!response.ok) throw new Error(`France source returned ${response.status}`);
-
-    const archive = unzipSync(new Uint8Array(await response.arrayBuffer()));
-    const xmlEntry = Object.entries(archive).find(([name]) => name.toLowerCase().endsWith(".xml"));
-    if (!xmlEntry) throw new Error("France feed did not contain XML");
-
-    const parser = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "",
-      textNodeName: "#text",
-      parseTagValue: false,
-      parseAttributeValue: false,
-      trimValues: true
-    });
-
-    const parsed = parser.parse(new TextDecoder().decode(xmlEntry[1])) as AnyRecord;
-    const list = (parsed.pdv_liste ?? {}) as AnyRecord;
-    const rows = asArray(list.pdv as AnyRecord | AnyRecord[] | undefined);
-
-    return rows.flatMap((raw): Station[] => {
-      const latitude = parseCoordinate(raw.latitude);
-      const longitude = parseCoordinate(raw.longitude);
-      if (latitude == null || longitude == null) return [];
-
-      const km = distanceKm(
-        { latitude: query.latitude, longitude: query.longitude },
-        { latitude, longitude }
-      );
-      if (km > query.radiusKm) return [];
-
-      const prices = choosePrices(asArray(raw.prix as AnyRecord | AnyRecord[] | undefined));
-      if (!prices.some((price) => price.fuel === query.fuel)) return [];
-
-      const address = textValue(raw.adresse);
-      const city = textValue(raw.ville);
-      const postalCode = String(raw.cp ?? "").trim();
-      const fullAddress = [address, postalCode, city].filter(Boolean).join(", ");
-
-      return [{
-        id: String(raw.id ?? `${latitude},${longitude}`),
-        country: "FR",
-        name: city ? `Station-service · ${city}` : "Station-service",
-        address: fullAddress,
-        latitude,
-        longitude,
-        prices,
-        openingHours: undefined,
-        source: "Prix des carburants · Open Data France",
-        sourceUpdatedAt: prices
-          .map((price) => price.updatedAt)
-          .filter((value): value is string => Boolean(value))
-          .sort()
-          .at(-1)
-      }];
-    });
-  }
+  code: 'FR', status: 'live', sourceName: SOURCE, sourceUrl: FR_ENDPOINT,
+  licence: 'Licence Ouverte / Open Licence 2.0', termsUrl: 'https://www.prix-carburants.gouv.fr/rubrique/opendata/', lastVerifiedAt: '2026-11-07T10:39:28Z',
+  async listStations(query) { return (await snapshot()).filter(s => distanceKm(query, s) <= query.radiusKm && s.prices.some(p => p.fuel === query.fuel)); }
 };

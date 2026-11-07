@@ -9,8 +9,8 @@ export function addRelativePriceBands(stations: Station[], fuel: FuelType): Stat
   if (!priced.length) return stations;
 
   function bandFor(price: number): PriceBand {
-    if (priced.length === 1) return 3;
-    const rank = priced.filter((item) => item <= price).length / priced.length;
+    if (priced.length === 1 || priced[0] === priced.at(-1)) return 3;
+    const rank = priced.filter((item) => item < price).length / (priced.length - 1);
     if (rank <= 0.2) return 1;
     if (rank <= 0.4) return 2;
     if (rank <= 0.6) return 3;

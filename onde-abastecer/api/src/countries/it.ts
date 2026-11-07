@@ -1,4 +1,6 @@
 import { distanceKm } from "../lib/geo";
+import { fetchSource } from "../lib/source";
+import { decimal, sourceTimestamp, validCoordinates } from "../../../shared/normalization";
 import type { CountryAdapter, FuelPrice, FuelType, Station } from "../types";
 
 const DATASET_PAGE =
@@ -15,9 +17,8 @@ function cleanHref(value: string) {
 }
 
 async function resolveCsvLinks() {
-  const page = await fetch(DATASET_PAGE, {
+  const page = await fetchSource(DATASET_PAGE, {
     headers: { accept: "text/html" },
-    cf: { cacheTtl: 21600, cacheEverything: true }
   });
   if (!page.ok) throw new Error(`MIMIT dataset page returned ${page.status}`);
 
@@ -72,10 +73,7 @@ function get(row: Row, ...keys: string[]): string {
   return "";
 }
 
-function number(value: string): number | undefined {
-  const parsed = Number(value.trim().replace(",", "."));
-  return Number.isFinite(parsed) ? parsed : undefined;
-}
+const number = decimal;
 
 function normalizeFuel(description: string): FuelType | undefined {
   const value = description.trim().toLowerCase();
@@ -86,7 +84,8 @@ function normalizeFuel(description: string): FuelType | undefined {
   }
 
   if (value.includes("benzina")) {
-    if (value.includes("98") || value.includes("premium") || value.includes("special")) return "gasoline98";
+    if (/\b98\b/.test(value)) return "gasoline98";
+    if (value.includes("premium") || value.includes("special")) return undefined;
     return "gasoline95";
   }
 
@@ -96,7 +95,7 @@ function normalizeFuel(description: string): FuelType | undefined {
 
 export const italyAdapter: CountryAdapter = {
   code: "IT",
-  status: "live",
+  status: "unverified",
   sourceName: "MIMIT · Osservaprezzi carburanti",
   sourceUrl: DATASET_PAGE,
 
@@ -104,8 +103,8 @@ export const italyAdapter: CountryAdapter = {
     const { registryUrl, pricesUrl } = await resolveCsvLinks();
 
     const [registryResponse, pricesResponse] = await Promise.all([
-      fetch(registryUrl, { cf: { cacheTtl: 21600, cacheEverything: true } }),
-      fetch(pricesUrl, { cf: { cacheTtl: 21600, cacheEverything: true } })
+      fetchSource(registryUrl, {}),
+      fetchSource(pricesUrl, {})
     ]);
 
     if (!registryResponse.ok) {
@@ -124,7 +123,7 @@ export const italyAdapter: CountryAdapter = {
       const id = get(raw, "idImpianto", "idimpianto");
       const latitude = number(get(raw, "Latitudine"));
       const longitude = number(get(raw, "Longitudine"));
-      if (!id || latitude == null || longitude == null) continue;
+      if (!id || latitude == null || longitude == null || !validCoordinates(latitude, longitude)) continue;
 
       const km = distanceKm(
         { latitude: query.latitude, longitude: query.longitude },
@@ -148,7 +147,8 @@ export const italyAdapter: CountryAdapter = {
         longitude,
         prices: [],
         source: "MIMIT · Osservaprezzi carburanti",
-        sourceUpdatedAt: prices.extractionDate ?? registry.extractionDate
+        sourceUpdatedAt: undefined,
+        sourceUrl: DATASET_PAGE
       });
     }
 
@@ -170,7 +170,11 @@ export const italyAdapter: CountryAdapter = {
         fuel,
         price: value,
         currency: "EUR",
-        updatedAt: get(raw, "dtComu") || prices.extractionDate,
+        unit: "L",
+        updatedAt: sourceTimestamp(get(raw, "dtComu"), "Europe/Rome"),
+        reportedAt: get(raw, "dtComu"),
+        timestampKind: "price",
+        serviceMode: selfService ? "self" : "attended",
         selfService
       };
 
