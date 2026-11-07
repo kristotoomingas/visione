@@ -1,0 +1,19 @@
+{
+  "name": "onde-abastecer-checks",
+  "private": true,
+  "scripts": {
+    "install:apps": "npm ci --prefix api && npm ci --prefix mobile",
+    "lint": "eslint api/src mobile/App.tsx mobile/src shared tests",
+    "typecheck": "npm run typecheck --prefix api && npm run typecheck --prefix mobile",
+    "test": "tsx --test tests/*.test.ts",
+    "build": "npm run build --prefix api && npm run build --prefix mobile",
+    "smoke:sources": "tsx scripts/smoke-sources.ts"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.1",
+    "@eslint/js": "^9.39.1",
+    "typescript-eslint": "^8.46.3",
+    "typescript": "~6.0.3",
+    "tsx": "^4.20.6"
+  }
+}
