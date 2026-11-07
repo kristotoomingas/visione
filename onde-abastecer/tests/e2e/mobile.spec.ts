@@ -41,3 +41,94 @@ test('unsupported country displays coverage error and clears previous stations',
   await expect(page.getByText('Este país ainda não tem integração habilitada.', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Lista (0)', exact: true })).toBeVisible();
 });
+
+test('manual coordinates issue an exact new search without GPS permission', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Lista (2)', exact: true })).toBeVisible();
+  const request = page.waitForRequest(r => r.url().includes('/v1/stations?') && r.url().includes('lat=42.25') && r.url().includes('lng=-8.73'));
+  await page.getByLabel('Cidade, endereço ou latitude, longitude', { exact: true }).fill('42.25, -8.73');
+  await page.getByRole('button', { name: 'Buscar', exact: true }).click();
+  const query = new URL((await request).url()).searchParams;
+  expect(query.get('country')).toBe('ES');
+  await expect(page.getByRole('button', { name: 'Lista (2)', exact: true })).toBeVisible();
+});
+test('late fuel response cannot replace a newer selection', async ({ page }) => {
+  await page.route('**/v1/stations?**', async route => {
+    const url = new URL(route.request().url()), fuel = url.searchParams.get('fuel');
+    if (fuel === 'diesel') await new Promise(resolve => setTimeout(resolve, 400));
+    const values = fuel === 'lpg' ? stations.slice(0, 1) : stations;
+    await route.fulfill({ json: { country: 'ES', fuel, stations: values.map(s => ({ ...s, prices: s.prices.map(p => ({ ...p, fuel })) })), retrievedAt: new Date().toISOString() } }).catch(() => {});
+  });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Lista (2)', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Diesel', exact: true }).click();
+  await page.getByRole('button', { name: 'LPG / GLP', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Lista (1)', exact: true })).toBeVisible();
+  await page.waitForTimeout(500);
+  await expect(page.getByRole('button', { name: 'Lista (1)', exact: true })).toBeVisible();
+});
+test('an offline reload explicitly identifies previously saved data', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Lista (2)', exact: true })).toBeVisible();
+  await page.route('**/v1/stations?**', route => route.abort('internetdisconnected'));
+  await page.reload();
+  await expect(page.getByText(/OFFLINE · últimos dados salvos/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Lista (2)', exact: true })).toBeVisible();
+});
+
+test('granted browser geolocation searches coordinates with the selected country', async ({ page, context }) => {
+  await context.grantPermissions(['geolocation']);
+  await context.setGeolocation({ latitude: 42.25, longitude: -8.73 });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Lista (2)', exact: true })).toBeVisible();
+  const request = page.waitForRequest(r => r.url().includes('/v1/stations?') && r.url().includes('lat=42.25'), { timeout: 3000 });
+  await page.getByRole('button', { name: /Minha localização/ }).click();
+  expect(new URL((await request).url()).searchParams.get('country')).toBe('ES');
+});
+
+test('search this area wins over an older pending geolocation', async ({ page, context }) => {
+  await context.grantPermissions(['geolocation']);
+  await page.addInitScript(() => {
+    navigator.geolocation.getCurrentPosition = success => {
+      Object.defineProperty(window, '__resolveLocation', { configurable: true, value: () => success({ coords: { latitude: 43, longitude: -7, accuracy: 10, altitude: null, altitudeAccuracy: null, heading: null, speed: null }, timestamp: Date.now() } as GeolocationPosition) });
+    };
+  });
+  const queries: string[] = [];
+  page.on('request', r => { if (r.url().includes('/v1/stations?')) queries.push(r.url()); });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Lista (2)', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: /Minha localização/ }).click();
+  await expect.poll(() => page.evaluate(() => typeof (window as unknown as { __resolveLocation?: () => void }).__resolveLocation)).toBe('function');
+  await page.getByRole('button', { name: 'Buscar nesta área', exact: true }).click();
+  await page.evaluate(() => (window as unknown as { __resolveLocation: () => void }).__resolveLocation());
+  await page.waitForTimeout(400);
+  expect(queries.some(url => new URL(url).searchParams.get('lat') === '43')).toBe(false);
+});
+test('deleting local data cancels an in-flight search and leaves no cache', async ({ page }) => {
+  let release: () => void = () => {};
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/v1/stations?**', async route => {
+    if (new URL(route.request().url()).searchParams.get('lat') === '42.25') await pending;
+    await route.fulfill({ json: { ...payloadForSearch(route.request().url()), stations, retrievedAt: new Date().toISOString() } }).catch(() => {});
+  });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Lista (2)', exact: true })).toBeVisible();
+  const requested = page.waitForRequest(r => r.url().includes('lat=42.25'));
+  await page.getByLabel('Cidade, endereço ou latitude, longitude', { exact: true }).fill('42.25, -8.73');
+  await page.getByRole('button', { name: 'Buscar', exact: true }).click();
+  await requested;
+  await page.getByRole('button', { name: 'Veículo', exact: true }).click();
+  await page.getByRole('button', { name: 'Apagar favoritos, preferências e cache', exact: true }).click();
+  await expect(page.getByText('Dados locais apagados.', { exact: true })).toBeVisible();
+  release(); await page.waitForTimeout(300);
+  expect(await page.evaluate(() => localStorage.getItem('oa:lastSearch:v1'))).toBeNull();
+  await expect(page.getByRole('button', { name: 'Lista (0)', exact: true })).toBeVisible();
+});
+function payloadForSearch(url: string) { const params = new URL(url).searchParams; return { country: params.get('country'), fuel: params.get('fuel') }; }
+
+test('fuel compatibility label is translated with the interface', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: '95 · E5 / composição não informada', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'EN', exact: true }).click();
+  await expect(page.getByRole('button', { name: '95 · E5 / blend unknown', exact: true })).toBeVisible();
+});

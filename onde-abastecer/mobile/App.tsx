@@ -61,12 +61,17 @@ function Application() {
   const [retrievedAt, setRetrievedAt] = useState('');
   const [refresh, setRefresh] = useState(0);
   const locationRequest = useRef(0);
+  const activeSearch = useRef<AbortController | null>(null);
+  const localGeneration = useRef(0);
+  const localWrites = useRef<Promise<unknown>>(Promise.resolve());
+  const clearingLocal = useRef(false);
   const query = useMemo(() => ({ country, fuel, latitude: center.latitude, longitude: center.longitude, radiusKm: radius }), [country, fuel, center, radius]);
 
   useEffect(() => {
     let active = true;
+    const generation = localGeneration.current;
     void Promise.all([AsyncStorage.getItem(FAV_KEY), AsyncStorage.getItem(PREF_KEY)]).then(([fav, pref]) => {
-      if (!active) return;
+      if (!active || generation !== localGeneration.current) return;
       if (fav) { const value = JSON.parse(fav); if (Array.isArray(value)) setFavorites(value.filter(v => typeof v === 'string').slice(0, 200)); }
       if (pref) {
         const value = JSON.parse(pref);
@@ -78,6 +83,7 @@ function Application() {
   }, []);
   useEffect(() => {
     const controller = new AbortController();
+    activeSearch.current = controller;
     setLoading(true); setError(null); setStations([]); setSelected(null); setOffline(false); setRetrievedAt('');
     void client(query, controller.signal).then(result => {
       if (controller.signal.aborted) return;
@@ -96,6 +102,32 @@ function Application() {
   const liters = volumeMode === 'manual' ? decimal(vehicle.liters) : fillVolume(decimal(vehicle.capacity) ?? NaN, decimal(vehicle.remaining) ?? NaN);
   const savings = selectedPrice && referencePrice && !offline ? calculateSavings({ reference: referencePrice, candidate: selectedPrice, liters: liters ?? NaN, consumptionLitersPer100Km: decimal(vehicle.consumption) ?? NaN, detour: decimal(extraKm) == null ? undefined : detourMode === 'return' ? { mode: 'return', oneWayKm: decimal(extraKm)! } : { mode: 'route', additionalKm: decimal(extraKm)! } }) : null;
 
+  async function persistLocal(key: string, value: string) {
+    if (clearingLocal.current) return false;
+    const generation = localGeneration.current;
+    localWrites.current = localWrites.current.catch(() => {}).then(async () => {
+      if (generation === localGeneration.current) await AsyncStorage.setItem(key, value);
+    });
+    try { await localWrites.current; } catch (error) { if (generation !== localGeneration.current) return false; throw error; }
+    return generation === localGeneration.current;
+  }
+  async function resetLocal() {
+    if (clearingLocal.current) return;
+    clearingLocal.current = true;
+    localGeneration.current++; locationRequest.current++;
+    activeSearch.current?.abort(); setLocating(false); setLoading(false); setError(null);
+    setFavorites([]); setVehicle(DEFAULT_VEHICLE); setStations([]); setSelected(null); setReference(null); setExtraKm(''); setOffline(false); setRetrievedAt('');
+    try {
+      await Promise.all([client.clearCache(), localWrites.current.catch(() => {})]);
+      await AsyncStorage.multiRemove([FAV_KEY, PREF_KEY, 'oa:lastSearch:v1']);
+      setNotice('resetDone');
+    } catch { setNotice('storageFailed'); }
+    finally { clearingLocal.current = false; }
+  }
+  function searchMapArea() {
+    locationRequest.current++; setLocating(false); setNotice(null);
+    setCenter({ ...mapRegion }); setRefresh(v => v + 1);
+  }
   function selectStation(station: Station) { setExtraKm(''); setSelected(station); }
   function clearFilters() { setBrand(''); setMaxPrice(''); setOnly24h(false); setService(''); setFavoritesOnly(false); }
   function chooseCountry(code: CountryCode) {
@@ -116,8 +148,9 @@ function Application() {
       const addresses = await Location.reverseGeocodeAsync(position.coords).catch(() => []);
       if (request !== locationRequest.current) return;
       const code = addresses[0]?.isoCountryCode?.toUpperCase();
-      if (!code || !LAUNCH_COUNTRIES.some(c => c.code === code)) { setNotice('unsupported_country'); return; }
-      setCountry(code as CountryCode); clearFilters(); setCenter({ ...INITIAL, latitude: position.coords.latitude, longitude: position.coords.longitude }); setNotice('gps');
+      if (code && !LAUNCH_COUNTRIES.some(c => c.code === code)) { setNotice('unsupported_country'); return; }
+      if (code) setCountry(code as CountryCode);
+      clearFilters(); setCenter({ ...INITIAL, latitude: position.coords.latitude, longitude: position.coords.longitude }); setNotice(code ? 'gps' : 'gpsManualCountry');
     } catch { if (request === locationRequest.current) setNotice('locationFailed'); }
     finally { if (request === locationRequest.current) setLocating(false); }
   }
@@ -137,6 +170,7 @@ function Application() {
       // Android requires this permission even for its system geocoding service.
       if (Platform.OS === 'android') {
         const permission = await Location.requestForegroundPermissionsAsync();
+        if (request !== locationRequest.current) return;
         if (permission.status !== 'granted') { setNotice('permission'); return; }
       }
       const countryName = LAUNCH_COUNTRIES.find(c => c.code === country)!.name;
@@ -152,11 +186,11 @@ function Application() {
     const key = stationKey(station);
     const next = favorites.includes(key) ? favorites.filter(v => v !== key) : [...favorites, key].slice(-200);
     setFavorites(next);
-    try { await AsyncStorage.setItem(FAV_KEY, JSON.stringify(next)); } catch { setNotice('storageFailed'); }
+    try { await persistLocal(FAV_KEY, JSON.stringify(next)); } catch { setNotice('storageFailed'); }
   }
   async function saveVehicle() {
     if (!Object.values(vehicle).every(v => decimal(v) != null) || (decimal(vehicle.liters) ?? 0) <= 0 || (decimal(vehicle.consumption) ?? 0) <= 0 || fillVolume(decimal(vehicle.capacity) ?? 0, decimal(vehicle.remaining) ?? -1) == null) { setNotice('invalidVehicle'); return; }
-    try { await AsyncStorage.setItem(PREF_KEY, JSON.stringify({ language, vehicle })); setNotice('saved'); } catch { setNotice('storageFailed'); }
+    try { if (await persistLocal(PREF_KEY, JSON.stringify({ language, vehicle }))) setNotice('saved'); } catch { setNotice('storageFailed'); }
   }
   async function openNavigation(station: Station) {
     const destination = `${station.latitude},${station.longitude}`;
@@ -166,6 +200,7 @@ function Application() {
   async function share(station: Station) {
     try { await Share.share({ message: `${station.name}\n${station.address}\n${selectedPrice ? formatPrice(selectedPrice.price, selectedPrice.currency, language) + '/L' : ''}\n${station.source}\n${selectedPrice?.updatedAt ?? t('unknownAge')}\nhttps://www.google.com/maps/search/?api=1&query=${station.latitude},${station.longitude}` }); } catch { setNotice('navigationFailed'); }
   }
+  function fuelLabel(value: FuelType) { return value === 'gasoline95' ? t('fuel95Label') : FUEL_LABELS[value]; }
   function date(raw?: string) { return raw && Number.isFinite(Date.parse(raw)) ? new Date(raw).toLocaleString(language === 'pt' ? 'pt-PT' : 'en-GB') : t('unknown'); }
   function age(station: Station): string {
     const p = station.prices.find(p => p.fuel === fuel);
@@ -192,9 +227,9 @@ function Application() {
       <Button label={locating ? '…' : `⌖ ${t('locate')}`} onPress={() => void locate()} disabled={locating} />
       {LAUNCH_COUNTRIES.map(c => <Button key={c.code} label={`${c.flag} ${c.code}${c.available ? '' : ' · ' + t('planned')}`} active={country === c.code} onPress={() => chooseCountry(c.code)} />)}
     </ScrollView>
-    <ScrollView horizontal style={styles.horizontal} contentContainerStyle={styles.chips} showsHorizontalScrollIndicator={false}>{FUEL_TYPES.map(f => <Button key={f} label={FUEL_LABELS[f]} active={fuel === f} onPress={() => chooseFuel(f)} />)}</ScrollView>
+    <ScrollView horizontal style={styles.horizontal} contentContainerStyle={styles.chips} showsHorizontalScrollIndicator={false}>{FUEL_TYPES.map(f => <Button key={f} label={fuelLabel(f)} active={fuel === f} onPress={() => chooseFuel(f)} />)}</ScrollView>
     <View style={styles.toolbar}><View style={styles.row}><Button label={t('map')} active={mode === 'map'} onPress={() => setMode('map')} /><Button label={`${t('list')} (${visible.length})`} active={mode === 'list'} onPress={() => setMode('list')} /></View><View style={styles.row}><Button label={t('filters')} active={panel === 'filters'} onPress={() => setPanel(panel === 'filters' ? null : 'filters')} /><Button label={t('vehicle')} active={panel === 'vehicle'} onPress={() => setPanel(panel === 'vehicle' ? null : 'vehicle')} /></View></View>
-    {panel ? <ScrollView style={styles.panel} contentContainerStyle={styles.panelContent}>{panel === 'vehicle' ? <>{vehicleFields}<Text style={styles.muted}>{t('privacy')}</Text><Button label={t('resetLocal')} onPress={() => { void AsyncStorage.multiRemove([FAV_KEY, PREF_KEY, 'oa:lastSearch:v1']).then(() => { setFavorites([]); setVehicle(DEFAULT_VEHICLE); setStations([]); setReference(null); setNotice('resetDone'); }).catch(() => setNotice('storageFailed')); }} /></> : <>
+    {panel ? <ScrollView style={styles.panel} contentContainerStyle={styles.panelContent}>{panel === 'vehicle' ? <>{vehicleFields}<Text style={styles.muted}>{t('privacy')}</Text><Button label={t('resetLocal')} onPress={() => void resetLocal()} /></> : <>
       <Text style={styles.label}>{t('radius')}</Text><View style={styles.wrap}>{[5, 10, 30, 50, 100].map(r => <Button key={r} label={`${r} km`} active={radius === r} onPress={() => setRadius(r)} />)}</View>
       <Field label={t('maxPrice')} value={maxPrice} set={setMaxPrice} />
       {brands.length ? <><Text style={styles.label}>{t('brand')}</Text><View style={styles.wrap}><Button label={t('all')} active={!brand} onPress={() => setBrand('')} />{brands.map(b => <Button key={b} label={b} active={brand === b} onPress={() => setBrand(b)} />)}</View></> : null}
@@ -206,15 +241,15 @@ function Application() {
     {loading ? <View accessibilityLiveRegion="polite" style={styles.status}><ActivityIndicator color="#176C50" /><Text style={styles.body}>{t('loading')}</Text></View> : error ? <View accessibilityLiveRegion="assertive" style={styles.error}><Text style={styles.body}>{t(error)}</Text><Button label={t('retry')} onPress={() => setRefresh(r => r + 1)} /></View> : null}
     {offline ? <Text accessibilityLiveRegion="polite" style={styles.offline}>{t('offline')} · {date(retrievedAt)}</Text> : null}
     <View style={[styles.content, wide && styles.wide]}>
-      {mode === 'map' ? <View style={styles.map}><StationMap center={center} stations={visible} fuel={fuel} onSelect={selectStation} onRegionChange={setMapRegion} locationGranted={locationGranted} /><View style={styles.mapAction}><Button label={t('searchHere')} active onPress={() => { setCenter({ ...mapRegion }); setRefresh(v => v + 1); }} /></View><View style={styles.legend}><Text style={styles.muted}>{t('price')}</Text>{([1, 2, 3, 4, 5] as const).map(b => <View key={b} style={[styles.dot, { backgroundColor: colorForBand(b) }]} />)}</View></View> : null}
-      {(mode === 'list' || wide) ? <View style={[styles.list, wide && mode === 'map' && { maxWidth: 460 }]}><View style={styles.listHeader}><Text accessibilityRole="header" style={styles.heading}>{visible.length} {t('list').toLowerCase()}</Text><View style={styles.row}><Button label={t('price')} active={sort === 'price'} onPress={() => setSort('price')} /><Button label={t('distance')} active={sort === 'distance'} onPress={() => setSort('distance')} /></View></View><Text style={styles.small}>{t('straight')}</Text><FlatList data={visible} keyExtractor={stationKey} renderItem={({ item }) => stationRow(item)} ListEmptyComponent={!loading && !error ? <Text style={styles.empty}>{t('empty')}</Text> : null} ListFooterComponent={<View style={styles.footer}><Text style={styles.small}>{t('published')}</Text><Text style={styles.small}>{retrievedAt ? `${t('received')}: ${date(retrievedAt)}` : ''}</Text><Text style={styles.small}>{t('future')}</Text></View>} /></View> : null}
+      {mode === 'map' ? <View style={styles.map}><StationMap center={center} stations={visible} fuel={fuel} onSelect={selectStation} onRegionChange={setMapRegion} locationGranted={locationGranted} /><View style={styles.mapAction}><Button label={t('searchHere')} active onPress={searchMapArea} /></View><View style={styles.legend}><Text style={styles.muted}>{t('price')}</Text>{([1, 2, 3, 4, 5] as const).map(b => <View key={b} style={[styles.dot, { backgroundColor: colorForBand(b) }]} />)}</View></View> : null}
+      {(mode === 'list' || wide) ? <View style={[styles.list, wide && mode === 'map' && { maxWidth: 460 }]}><View style={styles.listHeader}><Text accessibilityRole="header" style={styles.heading}>{visible.length} {t('stationsCount')}</Text><View style={styles.row}><Button label={t('price')} active={sort === 'price'} onPress={() => setSort('price')} /><Button label={t('distance')} active={sort === 'distance'} onPress={() => setSort('distance')} /></View></View><Text style={styles.small}>{t('straight')}</Text><FlatList data={visible} keyExtractor={stationKey} renderItem={({ item }) => stationRow(item)} ListEmptyComponent={!loading && !error ? <Text style={styles.empty}>{t('empty')}</Text> : null} ListFooterComponent={<View style={styles.footer}><Text style={styles.small}>{t('published')}</Text><Text style={styles.small}>{retrievedAt ? `${t('received')}: ${date(retrievedAt)}` : ''}</Text><Text style={styles.small}>{t('future')}</Text></View>} /></View> : null}
       {mode === 'map' && !wide && !loading && !error && visible.length === 0 ? <View pointerEvents="none" style={styles.mapEmpty}><Text style={styles.body}>{t('empty')}</Text></View> : null}
     </View>
     <Text style={styles.bottomNote}>{t('published')}</Text>
     <Modal visible={!!selected} animationType="slide" onRequestClose={() => setSelected(null)} transparent>
       <View style={styles.modalOverlay}><SafeAreaView style={styles.modalSheet}><View style={styles.modalHeader}><Text accessibilityRole="header" style={styles.heading}>{t('details')}</Text><Button label={t('close')} onPress={() => setSelected(null)} /></View><ScrollView contentContainerStyle={styles.details}>
         {selected && selectedPrice ? <>
-          <Text style={styles.title}>{selected.brand || selected.name}</Text><Text style={styles.body}>{selected.address}</Text><Text style={styles.detailPrice}>{formatPrice(selectedPrice.price, selectedPrice.currency, language)} / L</Text><Text style={styles.body}>{selectedPrice.label || FUEL_LABELS[fuel]} · {selected.country}</Text>
+          <Text style={styles.title}>{selected.brand || selected.name}</Text><Text style={styles.body}>{selected.address}</Text><Text style={styles.detailPrice}>{formatPrice(selectedPrice.price, selectedPrice.currency, language)} / L</Text><Text style={styles.body}>{selectedPrice.label || fuelLabel(fuel)} · {selected.country}</Text>
           <Text style={styles.age}>{age(selected)}</Text><Text style={styles.small}>{t(selectedPrice.timestampKind === 'feed' ? 'feedUpdated' : 'updated')}: {date(selectedPrice.updatedAt)}</Text>{selectedPrice.reportedAt ? <Text style={styles.small}>{selectedPrice.reportedAt}</Text> : null}
           <Text style={styles.body}>{t('source')}: {selected.source}</Text><Text style={styles.small}>{t('legal')}</Text>
           {selected.sourceUrl ? <Button label={t('sourceLink')} onPress={() => { if (selected.sourceUrl?.startsWith('https://')) void Linking.openURL(selected.sourceUrl).catch(() => setNotice('navigationFailed')); }} /> : null}

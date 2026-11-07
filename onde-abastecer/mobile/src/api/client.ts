@@ -1,6 +1,6 @@
 import { validStation } from '../../../shared/normalization';
 import type { SearchQuery, Station } from '../types';
-export interface LocalStore { getItem(key: string): Promise<string | null>; setItem(key: string, value: string): Promise<unknown> }
+export interface LocalStore { getItem(key: string): Promise<string | null>; setItem(key: string, value: string): Promise<unknown>; removeItem?(key: string): Promise<unknown> }
 export interface SearchResult { stations: Station[]; retrievedAt: string; cache: 'network' | 'offline' }
 export class ApiError extends Error {
   constructor(public code: string) { super(code); this.name = 'ApiError'; }
@@ -15,7 +15,13 @@ function validPayload(payload: unknown, query: SearchQuery): payload is SearchRe
 }
 function queryKey(query: SearchQuery): string { return JSON.stringify([query.country, query.fuel, query.latitude, query.longitude, query.radiusKm]); }
 export function createStationClient({ baseUrl, fetcher = fetch, storage, now = Date.now }: Options) {
-  return async (query: SearchQuery, signal?: AbortSignal): Promise<SearchResult> => {
+  let generation = 0;
+  let latestRequest = 0;
+  let cacheQueue: Promise<unknown> = Promise.resolve();
+  const search = async (query: SearchQuery, signal?: AbortSignal): Promise<SearchResult> => {
+    const requestGeneration = generation;
+    const requestId = ++latestRequest;
+    const current = () => !signal?.aborted && requestGeneration === generation && requestId === latestRequest;
     if (!baseUrl) throw new ApiError('api_not_configured');
     if (!/^https?:\/\//.test(baseUrl)) throw new ApiError('api_not_configured');
     const controller = new AbortController();
@@ -34,24 +40,37 @@ export function createStationClient({ baseUrl, fetcher = fetch, storage, now = D
       }
       const payload: unknown = await response.json().catch(() => { throw new ApiError('invalid_response'); });
       if (!validPayload(payload, query)) throw new ApiError('invalid_response');
-      if (signal?.aborted) throw new ApiError('cancelled');
+      if (!current()) throw new ApiError('cancelled');
       const result: SearchResult = { stations: payload.stations, retrievedAt: payload.retrievedAt, cache: 'network' };
       // Only one exact-query snapshot is persisted. Never store GPS history.
       if (storage && payload.stations.length <= 1000) {
-        try { await storage.setItem(CACHE_KEY, JSON.stringify({ key, payload: { ...result, country: query.country, fuel: query.fuel }, savedAt: now() })); } catch { /* Storage failure must not hide valid network data. */ }
+        const serialized = JSON.stringify({ key, payload: { ...result, country: query.country, fuel: query.fuel }, savedAt: now() });
+        cacheQueue = cacheQueue.catch(() => {}).then(async () => { if (current()) await storage.setItem(CACHE_KEY, serialized); });
+        try { await cacheQueue; } catch { /* Storage failure must not hide valid network data. */ }
       }
+      if (!current()) throw new ApiError('cancelled');
       return result;
     } catch (error) {
-      if (signal?.aborted) throw new ApiError('cancelled');
+      if (!current()) throw new ApiError('cancelled');
       if (error instanceof ApiError && !['source_unavailable'].includes(error.code)) throw error;
       if (storage) try {
         const raw = await storage.getItem(CACHE_KEY);
         const cached = raw ? JSON.parse(raw) : null;
-        if (cached?.key === key && typeof cached.savedAt === 'number' && cached.savedAt <= now() && now() - cached.savedAt < 7 * 86400000 && validPayload(cached.payload, query)) {
+        if (current() && cached?.key === key && typeof cached.savedAt === 'number' && cached.savedAt <= now() && now() - cached.savedAt < 7 * 86400000 && validPayload(cached.payload, query)) {
           return { stations: cached.payload.stations, retrievedAt: cached.payload.retrievedAt, cache: 'offline' };
         }
       } catch { /* Corrupt cache never becomes a successful response. */ }
       throw new ApiError(error instanceof ApiError ? error.code : 'network_error');
     } finally { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); }
   };
+  return Object.assign(search, {
+    async clearCache(): Promise<void> {
+      generation++; latestRequest++;
+      cacheQueue = cacheQueue.catch(() => {}).then(async () => {
+        if (storage?.removeItem) await storage.removeItem(CACHE_KEY);
+        else if (storage) await storage.setItem(CACHE_KEY, '');
+      });
+      await cacheQueue;
+    }
+  });
 }
