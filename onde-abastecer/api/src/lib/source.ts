@@ -25,7 +25,7 @@ export async function fetchSource(url: string, init: RequestInit = {}): Promise<
       for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
       return new Response(bytes, { headers: response.headers });
     } catch (error) {
-      if (attempt === 1 || (error instanceof Error && ['source_rejected_request', 'source_too_large'].includes(error.message))) throw new Error('source_unavailable');
+      if (attempt === 1 || (error instanceof Error && ['source_rejected_request', 'source_too_large'].includes(error.message))) throw new Error('source_unavailable', { cause: error });
       await new Promise(resolve => setTimeout(resolve, 200 + Math.floor(Math.random() * 200)));
     } finally { clearTimeout(timer); }
   }

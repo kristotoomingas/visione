@@ -38,10 +38,11 @@ jobs:
             onde-abastecer/api/package-lock.json
       - run: npm ci
       - run: npm ci --prefix api
+      - run: npm audit --audit-level=high
       - run: npm run lint
       - run: npm run typecheck --prefix api
       - run: npm test
-      - run: npm audit --prefix api --omit=dev --audit-level=high
+      - run: npm audit --prefix api --audit-level=high
       - run: npm run build --prefix api
   deploy:
     if: github.event_name == 'workflow_dispatch' && inputs.deploy && github.ref == 'refs/heads/main'

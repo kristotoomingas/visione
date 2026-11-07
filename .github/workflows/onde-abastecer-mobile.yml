@@ -35,7 +35,7 @@ jobs:
       - run: npm ci
       - run: npm ci --prefix mobile
       - run: npm run typecheck --prefix mobile
-      - run: npm audit --prefix mobile --omit=dev --audit-level=high
+      - run: npm audit --prefix mobile --audit-level=high
       - run: npm run build --prefix mobile
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
