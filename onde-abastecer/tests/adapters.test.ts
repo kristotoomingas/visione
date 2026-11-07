@@ -59,3 +59,15 @@ test('ES does not advertise restricted sale stations as public refuelling option
   const fixture = JSON.parse(es); fixture.ListaEESSPrecio[0]['Tipo Venta'] = 'R';
   assert.equal(parseSpain(fixture).some(s => s.id === 'fixture-west'), false);
 });
+
+test('ES rejects an explicit source error and an entirely malformed nonempty feed', async () => {
+  const { parseSpain } = await import('../api/src/countries/es');
+  assert.throws(() => parseSpain({ ResultadoConsulta: 'Error', Errores: ['Temporary failure'], ListaEESSPrecio: [] }));
+  assert.throws(() => parseSpain({ ListaEESSPrecio: [{ Latitud: 'broken', 'Longitud (WGS84)': 'broken' }] }));
+});
+test('ES opening 24 hours does not establish automatic service', async () => {
+  const { parseSpain } = await import('../api/src/countries/es');
+  const station = parseSpain(JSON.parse(es)).find(s => s.id === 'fixture-west');
+  assert.equal(station.openingHours, 'L-D: 24H');
+  assert.equal(station.automated24h, undefined);
+});

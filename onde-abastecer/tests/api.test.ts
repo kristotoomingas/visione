@@ -51,3 +51,10 @@ test('source failure is reported as failure and does not leak error messages', a
   assert.equal(response.status, 502);
   assert.deepEqual(await response.json(), { error: 'source_unavailable', country: 'ES' });
 });
+
+test('explicit ES source-level errors result in 502 rather than a successful empty list', async t => {
+  t.mock.method(globalThis, 'fetch', async () => new Response(JSON.stringify({ ResultadoConsulta: 'Error', Errores: ['Temporary failure'], ListaEESSPrecio: [] })));
+  const response = await worker.fetch(new Request('https://test/v1/stations?country=ES&lat=42&lng=-8'));
+  assert.equal(response.status, 502);
+  assert.deepEqual(await response.json(), { error: 'source_unavailable', country: 'ES' });
+});

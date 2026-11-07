@@ -53,3 +53,10 @@ test('source-local timestamps respect winter and summer offsets and reject inval
   assert.equal(normalization.sourceTimestamp('2026-11-07 11:00', 'Europe/Lisbon'), '2026-11-07T11:00:00.000Z');
   for (const v of ['', '2026-02-31 10:00:00', '2026-03-29 02:30:00']) assert.equal(normalization.sourceTimestamp(v, 'Europe/Paris'), undefined);
 });
+
+test('ISO timestamps reject impossible calendar dates and clock rollover', () => {
+  for (const value of ['2026-02-31T10:00:00Z', '2026-11-07T24:00:00Z', '2026-02-29T10:00:00+01:00']) {
+    assert.equal(normalization.sourceTimestamp(value, 'Europe/Paris'), undefined);
+    assert.equal(normalization.priceFreshness({ ...price, updatedAt: value }, now), 'unknown');
+  }
+});
