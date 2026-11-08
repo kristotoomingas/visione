@@ -8,6 +8,7 @@ import type { MapRegion } from './src/components/mapTypes';
 import { ApiError, createStationClient } from './src/api/client';
 import { FUEL_LABELS, FUEL_TYPES, LAUNCH_COUNTRIES } from './src/config/countries';
 import { translator, type Language, type TextKey } from './src/config/i18n';
+import { normalizeApiUrl } from './src/lib/apiUrl';
 import { colorForBand, formatPrice } from './src/lib/pricing';
 import { calculateSavings, fillVolume } from '../shared/economy';
 import { decimal, priceFreshness, validCoordinates } from '../shared/normalization';
@@ -15,7 +16,8 @@ import { selectStations, stationKey, type SortOrder } from '../shared/query';
 import type { CountryCode, FuelType, Station } from './src/types';
 
 const INITIAL: MapRegion = { latitude: 42.2406, longitude: -8.7207, latitudeDelta: 0.18, longitudeDelta: 0.18 };
-const client = createStationClient({ baseUrl: process.env.EXPO_PUBLIC_API_URL, storage: AsyncStorage });
+const DEFAULT_API_URL = normalizeApiUrl(process.env.EXPO_PUBLIC_API_URL) ?? '';
+const API_KEY = 'oa:api:v1';
 const PREF_KEY = 'oa:preferences:v1';
 const FAV_KEY = 'oa:favorites:v1';
 const DEFAULT_VEHICLE = { liters: '40', consumption: '6', capacity: '50', remaining: '20' };
@@ -40,7 +42,11 @@ function Application() {
   const [selected, setSelected] = useState<Station | null>(null);
   const [reference, setReference] = useState<Station | null>(null);
   const [mode, setMode] = useState<'map' | 'list'>('map');
-  const [panel, setPanel] = useState<'filters' | 'vehicle' | null>(null);
+  const [panel, setPanel] = useState<'filters' | 'vehicle' | 'connection' | null>(DEFAULT_API_URL ? null : 'connection');
+  const [apiUrl, setApiUrl] = useState(DEFAULT_API_URL);
+  const [apiDraft, setApiDraft] = useState(DEFAULT_API_URL);
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const client = useMemo(() => createStationClient({ baseUrl: apiUrl, storage: AsyncStorage }), [apiUrl]);
   const [brand, setBrand] = useState('');
   const [maxPrice, setMaxPrice] = useState('');
   const [only24h, setOnly24h] = useState(false);
@@ -70,18 +76,21 @@ function Application() {
   useEffect(() => {
     let active = true;
     const generation = localGeneration.current;
-    void Promise.all([AsyncStorage.getItem(FAV_KEY), AsyncStorage.getItem(PREF_KEY)]).then(([fav, pref]) => {
+    void Promise.all([AsyncStorage.getItem(FAV_KEY), AsyncStorage.getItem(PREF_KEY), AsyncStorage.getItem(API_KEY)]).then(([fav, pref, server]) => {
       if (!active || generation !== localGeneration.current) return;
+      const configured = normalizeApiUrl(server);
+      if (configured) { setApiUrl(configured); setApiDraft(configured); setPanel(null); }
       if (fav) { const value = JSON.parse(fav); if (Array.isArray(value)) setFavorites(value.filter(v => typeof v === 'string').slice(0, 200)); }
       if (pref) {
         const value = JSON.parse(pref);
         if (value.language === 'pt' || value.language === 'en') setLanguage(value.language);
         if (value.vehicle && Object.values(value.vehicle).every(v => typeof v === 'string' && decimal(v) != null)) setVehicle({ ...DEFAULT_VEHICLE, ...value.vehicle });
       }
-    }).catch(() => { if (active) setNotice('storageFailed'); });
+    }).catch(() => { if (active) setNotice('storageFailed'); }).finally(() => { if (active) setPreferencesLoaded(true); });
     return () => { active = false; locationRequest.current++; };
   }, []);
   useEffect(() => {
+    if (!preferencesLoaded) return;
     const controller = new AbortController();
     activeSearch.current = controller;
     setLoading(true); setError(null); setStations([]); setSelected(null); setOffline(false); setRetrievedAt('');
@@ -92,7 +101,7 @@ function Application() {
       if (!controller.signal.aborted) setError(e instanceof ApiError && e.code in ERROR_KEYS ? ERROR_KEYS[e.code] ?? 'network_error' : 'network_error');
     }).finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [query, refresh]);
+  }, [query, refresh, client, preferencesLoaded]);
 
   const visible = useMemo(() => selectStations(stations, fuel, { brand, maxPrice: decimal(maxPrice), only24h, service, favorites, onlyFavorites: favoritesOnly }, center, sort), [stations, fuel, brand, maxPrice, only24h, service, favorites, favoritesOnly, center, sort]);
   const brands = [...new Set(stations.map(s => s.brand).filter((v): v is string => !!v))].sort();
@@ -116,13 +125,25 @@ function Application() {
     clearingLocal.current = true;
     localGeneration.current++; locationRequest.current++;
     activeSearch.current?.abort(); setLocating(false); setLoading(false); setError(null);
+    setApiUrl(''); setApiDraft(''); setPanel('connection');
     setFavorites([]); setVehicle(DEFAULT_VEHICLE); setStations([]); setSelected(null); setReference(null); setExtraKm(''); setOffline(false); setRetrievedAt('');
     try {
       await Promise.all([client.clearCache(), localWrites.current.catch(() => {})]);
-      await AsyncStorage.multiRemove([FAV_KEY, PREF_KEY, 'oa:lastSearch:v1']);
+      await AsyncStorage.multiRemove([FAV_KEY, PREF_KEY, API_KEY, 'oa:lastSearch:v1']);
       setNotice('resetDone');
     } catch { setNotice('storageFailed'); }
     finally { clearingLocal.current = false; }
+  }
+  async function saveServer() {
+    const next = normalizeApiUrl(apiDraft);
+    if (!next) { setNotice('invalidApiUrl'); return; }
+    const generation = localGeneration.current;
+    locationRequest.current++; setLocating(false); activeSearch.current?.abort();
+    try {
+      await client.clearCache();
+      if (!await persistLocal(API_KEY, next) || generation !== localGeneration.current) return;
+      setReference(null); setExtraKm(''); setApiUrl(next); setApiDraft(next); setRefresh(v => v + 1); setPanel(null); setNotice('apiSaved');
+    } catch { if (generation === localGeneration.current) setNotice('storageFailed'); }
   }
   function searchMapArea() {
     locationRequest.current++; setLocating(false); setNotice(null);
@@ -228,8 +249,8 @@ function Application() {
       {LAUNCH_COUNTRIES.map(c => <Button key={c.code} label={`${c.flag} ${c.code}${c.available ? '' : ' · ' + t('planned')}`} active={country === c.code} onPress={() => chooseCountry(c.code)} />)}
     </ScrollView>
     <ScrollView horizontal style={styles.horizontal} contentContainerStyle={styles.chips} showsHorizontalScrollIndicator={false}>{FUEL_TYPES.map(f => <Button key={f} label={fuelLabel(f)} active={fuel === f} onPress={() => chooseFuel(f)} />)}</ScrollView>
-    <View style={styles.toolbar}><View style={styles.row}><Button label={t('map')} active={mode === 'map'} onPress={() => setMode('map')} /><Button label={`${t('list')} (${visible.length})`} active={mode === 'list'} onPress={() => setMode('list')} /></View><View style={styles.row}><Button label={t('filters')} active={panel === 'filters'} onPress={() => setPanel(panel === 'filters' ? null : 'filters')} /><Button label={t('vehicle')} active={panel === 'vehicle'} onPress={() => setPanel(panel === 'vehicle' ? null : 'vehicle')} /></View></View>
-    {panel ? <ScrollView style={styles.panel} contentContainerStyle={styles.panelContent}>{panel === 'vehicle' ? <>{vehicleFields}<Text style={styles.muted}>{t('privacy')}</Text><Button label={t('resetLocal')} onPress={() => void resetLocal()} /></> : <>
+    <View style={styles.toolbar}><View style={styles.row}><Button label={t('map')} active={mode === 'map'} onPress={() => setMode('map')} /><Button label={`${t('list')} (${visible.length})`} active={mode === 'list'} onPress={() => setMode('list')} /></View><View style={styles.row}><Button label={t('apiSettings')} active={panel === 'connection'} onPress={() => { setApiDraft(apiUrl); setPanel(panel === 'connection' ? null : 'connection'); }} /><Button label={t('filters')} active={panel === 'filters'} onPress={() => setPanel(panel === 'filters' ? null : 'filters')} /><Button label={t('vehicle')} active={panel === 'vehicle'} onPress={() => setPanel(panel === 'vehicle' ? null : 'vehicle')} /></View></View>
+    {panel ? <ScrollView style={styles.panel} contentContainerStyle={styles.panelContent}>{panel === 'vehicle' ? <>{vehicleFields}<Text style={styles.muted}>{t('privacy')}</Text><Button label={t('resetLocal')} onPress={() => void resetLocal()} /></> : panel === 'connection' ? <><Text accessibilityRole="header" style={styles.heading}>{t('apiSettings')}</Text><Text style={styles.small}>{t('apiHelp')}</Text><TextInput accessibilityLabel={t('apiUrl')} placeholder="https://api.example.com" autoCapitalize="none" autoCorrect={false} keyboardType="url" value={apiDraft} onChangeText={setApiDraft} style={styles.input} /><Button label={t('saveApi')} active onPress={() => void saveServer()} /></> : <>
       <Text style={styles.label}>{t('radius')}</Text><View style={styles.wrap}>{[5, 10, 30, 50, 100].map(r => <Button key={r} label={`${r} km`} active={radius === r} onPress={() => setRadius(r)} />)}</View>
       <Field label={t('maxPrice')} value={maxPrice} set={setMaxPrice} />
       {brands.length ? <><Text style={styles.label}>{t('brand')}</Text><View style={styles.wrap}><Button label={t('all')} active={!brand} onPress={() => setBrand('')} />{brands.map(b => <Button key={b} label={b} active={brand === b} onPress={() => setBrand(b)} />)}</View></> : null}

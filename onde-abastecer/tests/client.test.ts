@@ -99,3 +99,11 @@ test('clearing waits for an already-started storage write before deleting it', a
   await Promise.all([request, clearing]);
   assert.equal((await storage.getItem('oa:lastSearch:v1')) || null, null);
 });
+
+test('offline cache from a different configured server cannot become a successful search', async () => {
+  const storage = memory();
+  const first = mod.createStationClient({ baseUrl: 'https://api.first.test', storage, fetcher: async () => new Response(JSON.stringify(payload)) });
+  await first(query);
+  const second = mod.createStationClient({ baseUrl: 'https://api.second.test', storage, fetcher: async () => { throw Error('offline'); } });
+  await assert.rejects(second(query), { code: 'network_error' });
+});

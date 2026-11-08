@@ -44,7 +44,7 @@ export function createStationClient({ baseUrl, fetcher = fetch, storage, now = D
       const result: SearchResult = { stations: payload.stations, retrievedAt: payload.retrievedAt, cache: 'network' };
       // Only one exact-query snapshot is persisted. Never store GPS history.
       if (storage && payload.stations.length <= 1000) {
-        const serialized = JSON.stringify({ key, payload: { ...result, country: query.country, fuel: query.fuel }, savedAt: now() });
+        const serialized = JSON.stringify({ key, server: baseUrl, payload: { ...result, country: query.country, fuel: query.fuel }, savedAt: now() });
         cacheQueue = cacheQueue.catch(() => {}).then(async () => { if (current()) await storage.setItem(CACHE_KEY, serialized); });
         try { await cacheQueue; } catch { /* Storage failure must not hide valid network data. */ }
       }
@@ -56,7 +56,7 @@ export function createStationClient({ baseUrl, fetcher = fetch, storage, now = D
       if (storage) try {
         const raw = await storage.getItem(CACHE_KEY);
         const cached = raw ? JSON.parse(raw) : null;
-        if (current() && cached?.key === key && typeof cached.savedAt === 'number' && cached.savedAt <= now() && now() - cached.savedAt < 7 * 86400000 && validPayload(cached.payload, query)) {
+        if (current() && cached?.server === baseUrl && cached?.key === key && typeof cached.savedAt === 'number' && cached.savedAt <= now() && now() - cached.savedAt < 7 * 86400000 && validPayload(cached.payload, query)) {
           return { stations: cached.payload.stations, retrievedAt: cached.payload.retrievedAt, cache: 'offline' };
         }
       } catch { /* Corrupt cache never becomes a successful response. */ }

@@ -134,3 +134,16 @@ test('fuel compatibility label is translated with the interface', async ({ page 
   await page.getByRole('button', { name: 'EN', exact: true }).click();
   await expect(page.getByRole('button', { name: '95 · E5 / blend unknown', exact: true })).toBeVisible();
 });
+
+test('standalone app can configure its API from the device and persist it', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Servidor da API', exact: true }).click();
+  await page.getByLabel('URL da API', { exact: true }).fill('http://127.0.0.1:9999');
+  const request = page.waitForRequest(r => r.url().startsWith('http://127.0.0.1:9999/v1/stations'));
+  await page.getByRole('button', { name: 'Salvar servidor', exact: true }).click();
+  await request;
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Lista (2)', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Servidor da API', exact: true }).click();
+  await expect(page.getByLabel('URL da API', { exact: true })).toHaveValue('http://127.0.0.1:9999');
+});
