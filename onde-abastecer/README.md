@@ -6,6 +6,8 @@ Incremental continuation of [PR #23](https://github.com/pedropzz103-tech/visione
 
 Delivery report in Portuguese: [RELATORIO_ENTREGA.md](RELATORIO_ENTREGA.md).
 
+APK Android de teste gerado em 08/11/2026: veja [ANDROID_APK.md](docs/ANDROID_APK.md) para instalação, checksum, configuração da API e build local.
+
 ## Setup and run
 
 Requirements: Node **22.13+** (Node 24 recommended for proxy environments), npm, and a device/emulator for native QA. Run from the repository root:
@@ -125,7 +127,7 @@ No production publication is authorized by this branch. Before release:
 1. Profile upstream parsing against the actual free Worker CPU/memory and traffic limits; ES cold download was ~31s here. See [ARCHITECTURE.md](docs/ARCHITECTURE.md). Do not enable paid overages.
 2. Recheck licences, quotas, map provider/OSM tile rules and source reachability from deployment region.
 3. Validate on real Android and iOS devices: map rendering, safe areas, permission denial/allow, address search, navigation, share, offline, accessibility and slow network. No Android SDK/emulator or macOS/Xcode was available here.
-4. Review standalone native map configuration. Android Google Maps setup can require a provider key/account and platform terms; none was obtained. If free deployment constraints cannot be met, select a permitted alternative before release. Expo Go bundle success does not certify a standalone map.
+4. Android now uses bundled Leaflet in a native WebView with OSM tiles/attribution and no Google key; iOS retains its native map. Review provider policies and validate on actual devices. The test APK is documented separately; bundle/build success does not certify native runtime behaviour.
 5. Use local native tooling only when available: `npx expo prebuild --platform android` then Gradle from the generated Android directory; iOS requires macOS/Xcode. Prebuild generates ignored native directories and may require additional SDK setup. Do not purchase EAS/store subscriptions or publish without approval. Distribution accounts/fees are not included in the current zero-cost development setup.
 
 ## Cost and scope

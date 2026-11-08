@@ -30,7 +30,7 @@ These excerpts record what was read; they are not legal advice or a substitute f
 
 ## Map and geocoding sources
 
-- Native: existing react-native-maps using platform map services. Android standalone setup and provider terms must be reviewed before release; no paid key was acquired. Expo Go/device compatibility must be tested.
+- Android (2026-11-08): bundled Leaflet in native WebView with OSM tiles and attribution; no Google key required. iOS retains react-native-maps/platform services. Native device behaviour must still be tested; see docs/ANDROID_APK.md.
 - Web: Leaflet BSD-2-Clause, adapted CSS licence retained in mobile source. Standard OpenStreetMap tiles with visible attribution. [OSM tile usage policy](https://operations.osmfoundation.org/policies/tiles/): no bulk/offline tile downloads, retain attribution, respect caching and usage limits; no SLA. This is a development/default provider, not unlimited global production capacity. Production volume needs a suitable permitted provider within budget.
 - Address/city geocoding: operating system via expo-location on Android/iOS. Android requires foreground location permission for its geocoder. Coordinates remain usable without GPS. Browser build offers manual coordinates, not an undocumented public geocoding API.
 

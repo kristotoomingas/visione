@@ -89,3 +89,7 @@ EXPO_PUBLIC_API_URL=http://127.0.0.1:8788 npm run web -- --port 8082
 ```
 
 Abra `http://127.0.0.1:8082`. Em redes sem proxy, omita `NODE_USE_ENV_PROXY`. Para Android/iOS, URLs LAN/emulador, geocodificação nativa, Expo Doctor e o Worker padrão, siga o [README.md](README.md). O servidor Node é somente de desenvolvimento e não tem o binding de rate limit da Cloudflare.
+
+## Atualização — APK de teste em 08/11/2026
+
+Foi gerado e verificado um APK ARM64/Android 7+ de 28.620.988 bytes, com assinatura de teste e JavaScript/Hermes embutido. O mapa Android passou a usar Leaflet/OSM em WebView nativa sem chave Google; a URL do servidor pode ser configurada no próprio aparelho. Testes atualizados: 45 unitários/de integração e 12 cenários de navegador aprovados; Expo Doctor 21/21. Nenhum backend foi publicado e ainda falta teste em aparelho físico. Instruções, checksum e limites em [ANDROID_APK.md](docs/ANDROID_APK.md).
