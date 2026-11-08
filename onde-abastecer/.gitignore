@@ -11,3 +11,8 @@ android/
 ios/
 test-results/
 playwright-report/
+mobile/src/generated/
+*.apk
+*.aab
+*.keystore
+artifacts/
